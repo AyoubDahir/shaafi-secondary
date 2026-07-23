@@ -5,6 +5,14 @@
 # CORRECTED live: originally assumed a "<release>-master" service name, which
 # doesn't exist in sentinel mode — bitnami's chart collapses to one combined service
 # named plainly `<release>` (confirmed via `kubectl get svc -n erpnext`). Fixed below.
+#
+# CORRECTED live (2nd bug): Redis Sentinel does NOT resolve hostnames in `sentinel
+# monitor` lines by default — it expects a literal IP and fails fast with "Can't
+# resolve instance hostname" otherwise, regardless of whether the hostname is
+# actually resolvable (confirmed: `getent hosts redis-cache-ha` succeeds in the exact
+# same pod/container, but redis-sentinel itself still refused it). This is a Redis
+# config gate, not a DNS problem. Fix: `sentinel resolve-hostnames yes` opts into
+# hostname support for monitor targets.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -13,18 +21,21 @@ metadata:
 data:
   sentinel-cache.conf: |
     port 26379
+    sentinel resolve-hostnames yes
     sentinel monitor mymaster redis-cache-ha 6379 2
     sentinel down-after-milliseconds mymaster 5000
     sentinel failover-timeout mymaster 60000
     sentinel parallel-syncs mymaster 1
   sentinel-queue.conf: |
     port 26380
+    sentinel resolve-hostnames yes
     sentinel monitor mymaster redis-queue-ha 6379 2
     sentinel down-after-milliseconds mymaster 5000
     sentinel failover-timeout mymaster 60000
     sentinel parallel-syncs mymaster 1
   sentinel-socketio.conf: |
     port 26381
+    sentinel resolve-hostnames yes
     sentinel monitor mymaster redis-socketio-ha 6379 2
     sentinel down-after-milliseconds mymaster 5000
     sentinel failover-timeout mymaster 60000
