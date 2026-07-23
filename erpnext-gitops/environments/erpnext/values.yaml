@@ -68,10 +68,11 @@ jobs:
     backoffLimit: 5
     siteName: shaafi
     dbType: mariadb
-    # Replace before first sync — not left as the chart default "changeit" since this
-    # becomes a real reachable site. Inject via a referenced Secret at apply time
-    # rather than committing a real password to git.
-    adminPassword: changeit
+    # Same chart limitation as dbRootPassword above — no secret-ref option exists for
+    # this field, it's read as plaintext from values.yaml by job-create-site.yaml.
+    # Accepted only because this repo is private. Rotate via `bench --site shaafi
+    # set-admin-password` after first login if this needs to change.
+    adminPassword: "YmIQHWkFYnJpSG38f4Gr"
     forceCreate: false
     installApps:
       - erpnext
@@ -382,20 +383,53 @@ keda:
 # (apps/redis-cache-ha.yaml, apps/redis-queue-ha.yaml, apps/redis-socketio-ha.yaml —
 # master/replica + Sentinel each) plus apps/redis-sentinel-arbiter.yaml for the 3rd
 # vote. The chart's bundled redis subchart has no Sentinel support, so it can't be
-# used for this. VERIFY connection host/port once the redis-*-ha Applications have
-# synced (likely <release>-master / <release>-headless service names) — ERPNext's
-# redis connection strings are set via site_config.json by the createSite/migrate
-# jobs, not directly by these chart values; confirm how this chart wires them before
-# first sync.
+# used for this.
+#
+# CONFIRMED (read job-configure-bench.yaml directly): when redis-cache.enabled is
+# false, the chart reads `redis-cache.host` verbatim as the connection string (NOT
+# just a hostname — must be the full "redis://host:port" value, same shape as the
+# enabled branch produces). Without this key the configure job's REDIS_CACHE env
+# would render empty and break site bootstrap — this was a real gap in the first
+# draft, now fixed.
+#
+# VERIFY: <release>-master service names below assume ArgoCD sets the Helm release
+# name equal to the Application name (redis-cache-ha/redis-queue-ha/redis-socketio-ha)
+# — confirm with `kubectl get svc -n erpnext` once those Applications have synced.
+# Also VERIFY the "-master" Service is the one that follows Sentinel's elected
+# master after a failover (Bitnami's chart is documented to relabel/re-point it,
+# not just pin to pod-0 — but confirm behavior on the actual chart version pinned
+# in apps/redis-*-ha.yaml before relying on it for real failover).
 redis-cache:
   enabled: false
+  host: "redis://redis-cache-ha-master:6379"
 redis-queue:
   enabled: false
+  host: "redis://redis-queue-ha-master:6379"
 redis-socketio:
   enabled: false
+  host: "redis://redis-socketio-ha-master:6379"
 postgresql:
   enabled: false
-# mariadb: stays false — Galera is deployed independently (apps/mariadb-galera.yaml),
-# not via this chart's bundled standalone subchart. See dbHost above.
+# mariadb.enabled stays false — Galera is deployed independently
+# (apps/mariadb-galera.yaml), not via this chart's bundled standalone subchart. See
+# dbHost above. BUT `primary.service.ports.mysql` must stay defined regardless: several
+# job templates (create-site, configure-bench, grant-site-db-user) read
+# `.Values.mariadb.primary.service.ports.mysql` unconditionally as their DB_PORT
+# fallback, even when mariadb.enabled is false — removing it (as the first draft of
+# this file did) would break those jobs. Set to match the Galera service's port.
 mariadb:
   enabled: false
+  primary:
+    service:
+      ports:
+        mysql: 3306
+# dbRootUser/dbRootPassword: read by job-create-site.yaml and secret.yaml. This is a
+# real chart limitation, not a choice — secret.yaml b64-encodes dbRootPassword
+# DIRECTLY from this values.yaml field (there's no existingSecret option for it the
+# way apps/mariadb-galera.yaml's rootUser.existingSecret has), so this credential
+# unavoidably lives in git as plaintext here. Accepted only because this repo is
+# private — must match the same root password used to create the mariadb-galera-secret
+# Kubernetes Secret (kept OUT of git) that apps/mariadb-galera.yaml's Galera chart
+# actually authenticates with. Rotate both together if this ever needs to change.
+dbRootUser: "root"
+dbRootPassword: "2m84g4Rmhvxkfp6ja1GplzOfXqYWZqvn"
