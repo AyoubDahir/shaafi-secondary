@@ -1,0 +1,23 @@
+# The 3rd vote for the Galera cluster (apps/mariadb-galera.yaml) — see
+# system/garbd/deployment.yaml for the image/address caveats that must be verified
+# once mariadb-galera has synced at least once.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: garbd
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/AyoubDahir/shaafi-secondary.git
+    targetRevision: HEAD
+    path: erpnext-gitops/system/garbd
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: erpnext
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

@@ -1,0 +1,65 @@
+# Replaces the erpnext chart's bundled `redis-socketio` subchart (now redis-socketio.enabled:
+# false in values.yaml) with a standalone master/replica + Sentinel deployment, since
+# the chart's own bundled redis subcharts don't support Sentinel. Same pattern
+# repeated for redis-queue-ha.yaml / redis-socketio-ha.yaml — one per ERPNext redis
+# role, each an independent master/replica pair (not one shared Redis for all three,
+# matching how the live prod repo already keeps them as 3 separate instances).
+#
+# VERIFY BEFORE FIRST SYNC: pin an exact chart version and cross-check value paths
+# against `helm show values bitnami/redis --version <pinned>`.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: redis-socketio-ha
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  project: default
+  source:
+    repoURL: https://charts.bitnami.com/bitnami
+    chart: redis
+    targetRevision: 17.3.17 # VERIFY: pin to the actual latest at implementation time
+    helm:
+      values: |
+        architecture: replication
+        # NOTE: when sentinel.enabled=true, bitnami's redis chart runs one
+        # StatefulSet of `replicaCount` nodes (each with an embedded sentinel
+        # sidecar) rather than separate master/replica Deployments — the
+        # master/replica sub-keys below still set persistence/anti-affinity,
+        # but VERIFY this top-level replicaCount is the field actually consulted
+        # for the chart version pinned above.
+        replicaCount: 2
+        auth:
+          enabled: false
+        image:
+          registry: docker.io
+          repository: bitnamilegacy/redis
+          tag: 7.0.7-debian-11-r0
+        master:
+          containerPorts:
+            redis: 6379
+          persistence:
+            storageClass: longhorn-nvme
+            size: 5Gi
+        replica:
+          replicaCount: 1
+          containerPorts:
+            redis: 6379
+          persistence:
+            storageClass: longhorn-nvme
+            size: 5Gi
+          podAntiAffinityPreset: hard
+        sentinel:
+          enabled: true
+          quorum: 2
+          containerPort: 26379
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: erpnext
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

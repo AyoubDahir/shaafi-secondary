@@ -1,0 +1,20 @@
+# No domain yet — this Application is intentionally NOT auto-synced.
+# Once a real DNS name points at the cluster, sync manually (or add
+# spec.syncPolicy.automated) to create the ClusterIssuer.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: letsencrypt-issuer
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/AyoubDahir/shaafi-secondary.git
+    targetRevision: HEAD
+    path: erpnext-gitops/system/cert-manager/manifests
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: cert-manager
+  syncPolicy:
+    syncOptions:
+      - CreateNamespace=true

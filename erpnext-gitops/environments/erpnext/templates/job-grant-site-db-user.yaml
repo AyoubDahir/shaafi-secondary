@@ -1,0 +1,201 @@
+{{- if .Values.jobs.grantSiteDbUser.enabled }}
+# Runs after create-site: grants site DB user from '%' so gunicorn/workers can connect from any pod.
+# Idempotent; waits for site_config.json then CREATE USER IF NOT EXISTS ... @'%'; GRANT ...
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ template "erpnext.fullname" . }}-grant-db-user-{{ now | date "20060102150405" }}
+  labels:
+    {{- include "erpnext.labels" . | nindent 4 }}
+spec:
+  backoffLimit: {{ .Values.jobs.grantSiteDbUser.backoffLimit }}
+  template:
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ template "erpnext.serviceAccountName" $ }}
+      securityContext:
+        {{- toYaml $.Values.podSecurityContext | nindent 8 }}
+      initContainers:
+        - name: wait-for-mariadb
+          image: {{ include "erpnext.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["python3", "-c"]
+          args:
+            - |
+              import socket, os, time, sys
+              host = os.environ.get("DB_HOST", "localhost")
+              port = int(os.environ.get("DB_PORT", "3306"))
+              for i in range(240):
+                try:
+                  s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                  s.settimeout(3)
+                  s.connect((host, port))
+                  s.close()
+                  print("MariaDB reachable at %s:%s" % (host, port))
+                  sys.exit(0)
+                except Exception as e:
+                  if (i + 1) % 6 == 0:
+                    print("Attempt %s: %s" % (i + 1, e))
+                time.sleep(5)
+              print("Timeout (20 min) waiting for MariaDB at %s:%s" % (host, port))
+              sys.exit(1)
+          env:
+            - name: DB_HOST
+              {{- if .Values.mariadb.enabled }}
+              {{- if eq .Values.mariadb.architecture "replication" }}
+              value: {{ .Release.Name }}-mariadb-primary
+              {{- else }}
+              value: {{ .Release.Name }}-mariadb
+              {{- end }}
+              {{- else }}
+              value: {{ .Values.dbHost | default "localhost" | quote }}
+              {{- end }}
+            - name: DB_PORT
+              {{- if .Values.dbPort }}
+              value: {{ .Values.dbPort | quote }}
+              {{- else if .Values.mariadb.enabled }}
+              value: {{ .Values.mariadb.primary.service.ports.mysql | default "3306" | quote }}
+              {{- else }}
+              value: "3306"
+              {{- end }}
+        - name: wait-for-site
+          image: {{ include "erpnext.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["bash", "-c"]
+          args:
+            - |
+              SITE="{{ .Values.jobs.createSite.siteName }}"
+              PATH_FILE="/home/frappe/frappe-bench/sites/$SITE/site_config.json"
+              start=$(date +%s)
+              until [[ -f "$PATH_FILE" ]] && [[ -s "$PATH_FILE" ]]; do
+                echo "Waiting for $PATH_FILE (create-site must complete first)..."
+                sleep 10
+                if (( $(date +%s) - start > 600 )); then
+                  echo "Timeout waiting for site_config.json"
+                  exit 1
+                fi
+              done
+              echo "site_config.json found"
+          volumeMounts:
+            - name: sites-dir
+              mountPath: /home/frappe/frappe-bench/sites
+      containers:
+        - name: grant-db-user
+          image: {{ include "erpnext.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["bash", "-c"]
+          args:
+            - |
+              echo "Waiting for MariaDB root login..."
+              for i in $(seq 1 60); do
+                if /home/frappe/frappe-bench/env/bin/python3 -c "
+              import pymysql, os, sys
+              try:
+                  pymysql.connect(host=os.environ['DB_HOST'], port=int(os.environ.get('DB_PORT','3306')), user='root', password=os.environ['MARIADB_ROOT_PASSWORD'])
+                  print('MariaDB reachable')
+              except Exception as e:
+                  print('Not ready:', e); sys.exit(1)
+              " 2>&1; then break; fi
+                if [ $((i % 6)) -eq 0 ]; then echo "Attempt $i/60..."; fi
+                sleep 5
+              done
+
+              /home/frappe/frappe-bench/env/bin/python3 - <<'PYEOF'
+              import json, os, pymysql, sys, time
+
+              site = os.environ["SITE_NAME"]
+              path = "/home/frappe/frappe-bench/sites/%s/site_config.json" % site
+              with open(path) as f:
+                  cfg = json.load(f)
+              db_name = cfg["db_name"]
+              db_pass = cfg["db_password"]
+              host = os.environ.get("DB_HOST", "localhost")
+              port = int(os.environ.get("DB_PORT", "3306"))
+              root_pw = os.environ["MARIADB_ROOT_PASSWORD"]
+
+              # Wait until create-site has created the DB (avoids granting stale user after MariaDB reset)
+              for attempt in range(60):
+                  conn_w = None
+                  try:
+                      conn_w = pymysql.connect(host=host, port=port, user="root", password=root_pw)
+                      with conn_w.cursor() as cur:
+                          cur.execute("SELECT 1 FROM information_schema.schemata WHERE schema_name = %s", (db_name,))
+                          if cur.fetchone():
+                              break
+                  except Exception:
+                      pass
+                  finally:
+                      if conn_w:
+                          conn_w.close()
+                  if attempt < 59:
+                      print("Waiting for DB %s to exist (create-site may still be running)..." % db_name)
+                      time.sleep(10)
+              else:
+                  print("ERROR: DB %s never appeared in MariaDB" % db_name)
+                  sys.exit(1)
+
+              # Escape for SQL: identifiers (backticks), username (single quote), password (backslash and single quote)
+              db_name_esc = db_name.replace("\\", "\\\\").replace("'", "''")
+              db_name_backtick = db_name.replace("\\", "\\\\").replace("`", "``")
+              db_pass_esc = db_pass.replace("\\", "\\\\").replace("'", "''")
+
+              conn = pymysql.connect(host=host, port=port, user="root", password=root_pw)
+              try:
+                  with conn.cursor() as cur:
+                      cur.execute("CREATE USER IF NOT EXISTS '%s'@'%%' IDENTIFIED BY '%s'" % (db_name_esc, db_pass_esc))
+                      cur.execute("GRANT ALL PRIVILEGES ON `%s`.* TO '%s'@'%%'" % (db_name_backtick, db_name_esc))
+                      cur.execute("FLUSH PRIVILEGES")
+                  conn.commit()
+                  print("OK: granted %s@'%%' on %s" % (db_name, db_name))
+              finally:
+                  conn.close()
+              PYEOF
+          env:
+            - name: SITE_NAME
+              value: {{ .Values.jobs.createSite.siteName | quote }}
+            - name: DB_HOST
+              {{- if .Values.mariadb.enabled }}
+              {{- if eq .Values.mariadb.architecture "replication" }}
+              value: {{ .Release.Name }}-mariadb-primary
+              {{- else }}
+              value: {{ .Release.Name }}-mariadb
+              {{- end }}
+              {{- else }}
+              value: {{ .Values.dbHost | default "localhost" | quote }}
+              {{- end }}
+            - name: DB_PORT
+              {{- if .Values.dbPort }}
+              value: {{ .Values.dbPort | quote }}
+              {{- else if .Values.mariadb.enabled }}
+              value: {{ .Values.mariadb.primary.service.ports.mysql | default "3306" | quote }}
+              {{- else }}
+              value: "3306"
+              {{- end }}
+            - name: MARIADB_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-mariadb
+                  key: mariadb-root-password
+          volumeMounts:
+            - name: sites-dir
+              mountPath: /home/frappe/frappe-bench/sites
+              readOnly: true
+          resources:
+            {{- toYaml .Values.jobs.grantSiteDbUser.resources | nindent 12 }}
+      restartPolicy: Never
+      volumes:
+        - name: sites-dir
+          {{- if .Values.persistence.worker.enabled }}
+          persistentVolumeClaim:
+            {{- if .Values.persistence.worker.existingClaim }}
+            claimName: {{ .Values.persistence.worker.existingClaim }}
+            {{- else }}
+            claimName: {{ template "erpnext.fullname" . }}
+            {{- end }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+{{- end }}

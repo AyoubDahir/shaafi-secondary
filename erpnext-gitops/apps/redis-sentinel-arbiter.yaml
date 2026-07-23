@@ -1,0 +1,23 @@
+# The 3rd vote for all 3 redis-*-ha Sentinel groups — see
+# system/redis-sentinel-arbiter/configmap.yaml for the service-name caveats that must
+# be verified once the redis-*-ha Applications have synced at least once.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: redis-sentinel-arbiter
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/AyoubDahir/shaafi-secondary.git
+    targetRevision: HEAD
+    path: erpnext-gitops/system/redis-sentinel-arbiter
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: erpnext
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

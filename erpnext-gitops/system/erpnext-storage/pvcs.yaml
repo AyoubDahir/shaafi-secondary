@@ -1,0 +1,48 @@
+# Dynamically provisioned via Longhorn (storageclasses-longhorn.yaml) — no PV objects
+# and no host-directory init job needed, unlike the old hostPath trio these replace.
+#
+# sites/logs are ReadWriteMany on the NVMe tier: gunicorn/nginx/socketio/worker-*/
+# scheduler pods plus every one-shot job all mount the same site files concurrently
+# (see the chart's own templates), and once those pods spread across
+# ShaafiControl1 + shaaficontrol2 a ReadWriteOnce volume could only attach to one
+# node at a time. backup is ReadWriteOnce on the SATA tier — the backup CronJob
+# (concurrencyPolicy: Forbid) is its only consumer, and keeping it off the NVMe disks
+# means backup writes never contend with live app/DB I/O.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: erpnext-pvc
+  namespace: erpnext
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: longhorn-nvme
+  resources:
+    requests:
+      storage: 50Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: erpnext-logs-pvc
+  namespace: erpnext
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: longhorn-nvme
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: erpnext-backup-pvc
+  namespace: erpnext
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: longhorn-sata
+  resources:
+    requests:
+      storage: 20Gi

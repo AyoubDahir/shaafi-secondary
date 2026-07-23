@@ -1,0 +1,78 @@
+# 3 plain `redis-sentinel` processes in one pod — the 3rd, data-less vote for each of
+# the 3 redis roles (see configmap.yaml for the caveats to verify after the redis-*-ha
+# Applications' first sync). No PersistentVolume, no anti-affinity requirement: it
+# doesn't compete with the 2 real data-bearing replicas for "one per node".
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis-sentinel-arbiter
+  namespace: erpnext
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis-sentinel-arbiter
+  template:
+    metadata:
+      labels:
+        app: redis-sentinel-arbiter
+    spec:
+      containers:
+        - name: sentinel-cache
+          image: docker.io/bitnamilegacy/redis:7.0.7-debian-11-r0
+          # redis-sentinel issues CONFIG REWRITE at runtime (e.g. after a failover)
+          # to persist the newly elected master back into its own config file — a
+          # ConfigMap mount is read-only, so copy it to a writable emptyDir first
+          # rather than running sentinel directly against the mounted file.
+          command:
+            - sh
+            - -c
+            - "cp /etc/redis-sentinel-src/sentinel-cache.conf /tmp/sentinel/sentinel-cache.conf && exec redis-sentinel /tmp/sentinel/sentinel-cache.conf"
+          ports:
+            - containerPort: 26379
+          volumeMounts:
+            - name: sentinel-conf-src
+              mountPath: /etc/redis-sentinel-src
+            - name: sentinel-conf-rw
+              mountPath: /tmp/sentinel
+          resources:
+            requests: {cpu: 25m, memory: 32Mi}
+            limits: {cpu: 100m, memory: 64Mi}
+        - name: sentinel-queue
+          image: docker.io/bitnamilegacy/redis:7.0.7-debian-11-r0
+          command:
+            - sh
+            - -c
+            - "cp /etc/redis-sentinel-src/sentinel-queue.conf /tmp/sentinel/sentinel-queue.conf && exec redis-sentinel /tmp/sentinel/sentinel-queue.conf"
+          ports:
+            - containerPort: 26380
+          volumeMounts:
+            - name: sentinel-conf-src
+              mountPath: /etc/redis-sentinel-src
+            - name: sentinel-conf-rw
+              mountPath: /tmp/sentinel
+          resources:
+            requests: {cpu: 25m, memory: 32Mi}
+            limits: {cpu: 100m, memory: 64Mi}
+        - name: sentinel-socketio
+          image: docker.io/bitnamilegacy/redis:7.0.7-debian-11-r0
+          command:
+            - sh
+            - -c
+            - "cp /etc/redis-sentinel-src/sentinel-socketio.conf /tmp/sentinel/sentinel-socketio.conf && exec redis-sentinel /tmp/sentinel/sentinel-socketio.conf"
+          ports:
+            - containerPort: 26381
+          volumeMounts:
+            - name: sentinel-conf-src
+              mountPath: /etc/redis-sentinel-src
+            - name: sentinel-conf-rw
+              mountPath: /tmp/sentinel
+          resources:
+            requests: {cpu: 25m, memory: 32Mi}
+            limits: {cpu: 100m, memory: 64Mi}
+      volumes:
+        - name: sentinel-conf-src
+          configMap:
+            name: redis-sentinel-arbiter-conf
+        - name: sentinel-conf-rw
+          emptyDir: {}

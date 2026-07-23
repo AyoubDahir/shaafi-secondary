@@ -1,0 +1,90 @@
+{{- if .Values.jobs.migrate.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ template "erpnext.fullname" . }}-migrate-{{ now | date "20060102150405" }}
+  labels:
+    {{- include "erpnext.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  backoffLimit: {{ .Values.jobs.migrate.backoffLimit }}
+  ttlSecondsAfterFinished: 600
+  template:
+    spec:
+    {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+    {{- end }}
+      serviceAccountName: {{ template "erpnext.serviceAccountName" $ }}
+      securityContext:
+        {{- toYaml $.Values.podSecurityContext | nindent 8 }}
+      containers:
+      - name: migrate
+        image: {{ include "erpnext.image" . | quote }}
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        command: ["bash", "-c"]
+        args:
+          - |
+            set -e
+            echo "$SITE_NAME" > sites/currentsite.txt
+            echo "Running bench migrate on $SITE_NAME..."
+            # Always turn maintenance mode off, even if migrate fails.
+            trap 'bench set-maintenance-mode off || true' EXIT
+            bench set-maintenance-mode on || true
+            bench migrate {{ if .Values.jobs.migrate.skipFailing }}--skip-failing{{ end }}
+            bench set-maintenance-mode off || true
+            echo "Migration complete."
+        env:
+          - name: "SITE_NAME"
+            value: "{{ .Values.jobs.migrate.siteName }}"
+        resources:
+          {{- toYaml .Values.jobs.migrate.resources | nindent 10 }}
+        securityContext:
+          {{- toYaml $.Values.securityContext | nindent 10 }}
+        volumeMounts:
+          - name: sites-dir
+            mountPath: /home/frappe/frappe-bench/sites
+          - name: logs
+            mountPath: /home/frappe/frappe-bench/logs
+      restartPolicy: Never
+      volumes:
+        - name: sites-dir
+          {{- if .Values.persistence.worker.enabled }}
+          persistentVolumeClaim:
+            {{- if .Values.persistence.worker.existingClaim }}
+            claimName: {{ .Values.persistence.worker.existingClaim }}
+            {{- else }}
+            claimName: {{ template "erpnext.fullname" . }}
+            {{- end }}
+            readOnly: false
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: logs
+          {{- if .Values.persistence.logs.enabled }}
+          persistentVolumeClaim:
+            {{- if .Values.persistence.logs.existingClaim }}
+            claimName: {{ .Values.persistence.logs.existingClaim }}
+            {{- else }}
+            claimName: {{ template "erpnext.fullname" . }}-logs
+            {{- end }}
+            readOnly: false
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+      {{- with .Values.jobs.migrate.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.jobs.migrate.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.jobs.migrate.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

@@ -1,0 +1,23 @@
+# No domain yet — using sslip.io (resolves <anything>.<ip-with-dashes>.sslip.io
+# to that IP) so ArgoCD's UI is reachable without any DNS setup. Swap for a
+# real hostname + cert-manager annotation once a domain is pointed at the cluster.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: argocd-server
+  namespace: argocd
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: "argocd.108-181-202-157.sslip.io"
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: argocd-server
+                port:
+                  number: 80

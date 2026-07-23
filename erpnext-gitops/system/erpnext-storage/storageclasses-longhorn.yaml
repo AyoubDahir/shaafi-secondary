@@ -1,0 +1,37 @@
+# Two tiers, matched to each server's real disk layout (see shaafi_real_servers
+# project notes): 2x NVMe + 1x SATA per node, beyond the OS disk. Longhorn only
+# schedules a volume's replicas onto disks whose tags match diskSelector — the tags
+# themselves get set when each node's disks are registered via the
+# node.longhorn.io/default-disks-config annotation (nvme0n1-disk/nvme1n1-disk tagged
+# "nvme", sdb-disk tagged "sata"). Both StorageClasses still use numberOfReplicas: 2
+# (one copy per node) — this is a tier split, not a replica-count change.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: longhorn-nvme
+provisioner: driver.longhorn.io
+allowVolumeExpansion: true
+reclaimPolicy: Retain
+volumeBindingMode: Immediate
+parameters:
+  numberOfReplicas: "2"
+  staleReplicaTimeout: "2880"
+  fsType: "ext4"
+  diskSelector: "nvme"
+---
+# SATA tier: backups only. Sequential, write-once-per-cycle I/O has no need for NVMe
+# speed, and keeping it on a separate physical disk means backup writes never
+# contend with live app/DB I/O on the same disk.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: longhorn-sata
+provisioner: driver.longhorn.io
+allowVolumeExpansion: true
+reclaimPolicy: Retain
+volumeBindingMode: Immediate
+parameters:
+  numberOfReplicas: "2"
+  staleReplicaTimeout: "2880"
+  fsType: "ext4"
+  diskSelector: "sata"

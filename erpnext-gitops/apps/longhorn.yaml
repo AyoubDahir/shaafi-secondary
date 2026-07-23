@@ -1,0 +1,35 @@
+# Storage engine for the secondary cluster. Only ShaafiControl1 and shaaficontrol2
+# get disk annotations (kubectl annotate node ... node.longhorn.io/default-disks-config,
+# done by hand once nodes are Ready — see PROJECT_PLANNING / rollout notes), so the
+# future VPS control-plane node never receives a Longhorn replica automatically.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: longhorn
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  project: default
+  source:
+    repoURL: https://charts.longhorn.io
+    targetRevision: 1.7.2
+    chart: longhorn
+    helm:
+      values: |
+        defaultSettings:
+          createDefaultDiskLabeledNodes: false
+          replicaSoftAntiAffinity: false
+          replicaAutoBalance: least-effort
+          defaultReplicaCount: 2
+        persistence:
+          defaultClass: false
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: longhorn-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

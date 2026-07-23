@@ -1,0 +1,316 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "erpnext.fullname" . }}-gunicorn
+  labels:
+    {{- include "erpnext.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.worker.gunicorn.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "erpnext.name" . }}-gunicorn
+      app.kubernetes.io/instance: {{ .Release.Name }}-gunicorn
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "erpnext.name" . }}-gunicorn
+        app.kubernetes.io/instance: {{ .Release.Name }}-gunicorn
+      {{- if .Values.forceRedeploy }}
+      annotations:
+        forceRedeploy: {{ .Values.forceRedeploy | quote }}
+      {{- end }}
+    spec:
+    {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+    {{- end }}
+      serviceAccountName: {{ include "erpnext.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      initContainers:
+        - name: populate-assets
+          image: {{ include "erpnext.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["bash", "-c"]
+          args:
+            - |
+              ASSETS_DIR=/home/frappe/frappe-bench/sites/assets
+              BUILT=/home/frappe/frappe-bench/.built-assets
+              CONFIG=/home/frappe/frappe-bench/sites/common_site_config.json
+              mkdir -p "$ASSETS_DIR"
+
+              # Repair stale literal "\\n" suffix and reset invalid JSON config.
+              # This prevents runtime 500s when frappe reads redis_* settings.
+              if [ -f "$CONFIG" ]; then
+                sed -i 's/\\n$//' "$CONFIG" || true
+                if ! jq -e . "$CONFIG" >/dev/null 2>&1; then
+                  echo "{}" > "$CONFIG"
+                fi
+              fi
+
+              # Remove stale symlinks so cp can replace them with real dirs
+              find "$ASSETS_DIR" -maxdepth 1 -type l -delete 2>/dev/null
+
+              if [ -d "$BUILT" ]; then
+                echo "Copying .built-assets -> sites/assets"
+                cp -rf "$BUILT"/. "$ASSETS_DIR/"
+                echo "Done ($(du -sh "$ASSETS_DIR" | cut -f1))"
+              else
+                echo "WARN: .built-assets not found; assets will be stale"
+              fi
+
+              # Ensure static files exist even when image build skipped/failed assets build.
+              for app in frappe erpnext healthcare hrms payments mma_design prime; do
+                SRC="/home/frappe/frappe-bench/apps/$app/$app/public"
+                DST="$ASSETS_DIR/$app"
+                if [ -d "$SRC" ]; then
+                  mkdir -p "$DST"
+                  cp -rf "$SRC"/. "$DST"/ || true
+                fi
+              done
+              # Build runs in init container FS; materialize symlinked outputs into PVC-backed files.
+              TMP_ASSETS_POST=/tmp/materialized-assets-postbuild
+              rm -rf "$TMP_ASSETS_POST"
+              mkdir -p "$TMP_ASSETS_POST"
+              cp -rL "$ASSETS_DIR"/. "$TMP_ASSETS_POST"/ 2>/dev/null || true
+              find "$ASSETS_DIR" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+              cp -rf "$TMP_ASSETS_POST"/. "$ASSETS_DIR"/ || true
+              # bench build may recreate top-level app symlinks under sites/assets.
+              # Replace them with real directories/files on the shared PVC.
+              find "$ASSETS_DIR" -maxdepth 1 -type l -delete 2>/dev/null || true
+              for app in frappe erpnext healthcare hrms payments mma_design prime; do
+                SRC="/home/frappe/frappe-bench/apps/$app/$app/public"
+                DST="$ASSETS_DIR/$app"
+                if [ -d "$SRC" ]; then
+                  mkdir -p "$DST"
+                  cp -rLf "$SRC"/. "$DST"/ || true
+                fi
+              done
+
+              # Materialize any symlinked assets (created by bench build) into real PVC files.
+              TMP_ASSETS=/tmp/materialized-assets
+              rm -rf "$TMP_ASSETS"
+              mkdir -p "$TMP_ASSETS"
+              cp -rL "$ASSETS_DIR"/. "$TMP_ASSETS"/ 2>/dev/null || true
+              find "$ASSETS_DIR" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+              cp -rf "$TMP_ASSETS"/. "$ASSETS_DIR"/ || true
+
+              # A missing or placeholder assets.json breaks /app by leaving
+              # bundle names unresolved (erpnext.bundle.js, app.bundle.css, ...).
+              if [ ! -s "$ASSETS_DIR/assets.json" ] || ! /home/frappe/frappe-bench/env/bin/python3 -c "import json,os,sys; d=json.load(open('$ASSETS_DIR/assets.json')); req=('app.bundle.js','app.bundle.css','libs.bundle.js','desk.bundle.js','list.bundle.js','form.bundle.js','controls.bundle.js','report.bundle.js','erpnext.bundle.css','hrms.bundle.css'); ok=isinstance(d,dict) and all(k in d for k in req) and all(isinstance(v,str) and v.startswith('/assets/') and os.path.exists('/home/frappe/frappe-bench/sites/'+v.lstrip('/')) for v in d.values()); sys.exit(0 if ok else 1)" 2>/dev/null; then
+                echo "assets.json missing/empty; trying runtime build fallback"
+                # Ensure bench build writes into the PVC-backed assets path.
+                rm -rf /home/frappe/frappe-bench/assets
+                ln -s "$ASSETS_DIR" /home/frappe/frappe-bench/assets
+                export NVM_DIR=/home/frappe/.nvm
+                for node_bin in /home/frappe/.nvm/versions/node/*/bin; do
+                  [ -d "$node_bin" ] && export PATH="$node_bin:$PATH"
+                done
+                export NODE_OPTIONS="${NODE_OPTIONS:-} --max-old-space-size=4096"
+                cd /home/frappe/frappe-bench && bench build --production || true
+              fi
+
+              # bench build writes generated dist files under app public paths in this container.
+              # Re-copy after build so generated assets land on the shared sites PVC.
+              find "$ASSETS_DIR" -maxdepth 1 -type l -delete 2>/dev/null || true
+              for app in frappe erpnext healthcare hrms payments mma_design prime; do
+                SRC="/home/frappe/frappe-bench/apps/$app/$app/public"
+                DST="$ASSETS_DIR/$app"
+                if [ -d "$SRC" ]; then
+                  mkdir -p "$DST"
+                  cp -rf "$SRC"/. "$DST"/ || true
+                fi
+              done
+
+              # Never run with an empty assets map: that causes unresolved bundle
+              # URLs (/app.bundle.js, /erpnext.bundle.css, ...) and hard 404s.
+              if [ ! -s "$ASSETS_DIR/assets.json" ] || ! /home/frappe/frappe-bench/env/bin/python3 -c "import json,sys; d=json.load(open('$ASSETS_DIR/assets.json')); sys.exit(0 if isinstance(d, dict) and len(d) > 0 else 1)"; then
+                if [ -s "$BUILT/assets.json" ] && ! grep -Eq '^[[:space:]]*\{[[:space:]]*\}[[:space:]]*$' "$BUILT/assets.json"; then
+                  echo "Restoring assets.json from .built-assets"
+                  cp -f "$BUILT/assets.json" "$ASSETS_DIR/assets.json"
+                fi
+              fi
+
+              # Final fallback: synthesize assets.json by scanning files in sites/assets.
+              # This fixes unresolved root bundle URLs like /app.bundle.js and /erpnext.bundle.js.
+              /home/frappe/frappe-bench/env/bin/python3 - <<'PY'
+              import json
+              import os
+              import re
+
+              assets_root = "/home/frappe/frappe-bench/sites/assets"
+              assets_json = os.path.join(assets_root, "assets.json")
+
+              def load_json(path):
+                  try:
+                      with open(path, "r", encoding="utf-8") as f:
+                          return json.load(f)
+                  except Exception:
+                      return {}
+
+              current = load_json(assets_json)
+              required_keys = (
+                  "app.bundle.js",
+                  "app.bundle.css",
+                  "libs.bundle.js",
+                  "desk.bundle.js",
+                  "list.bundle.js",
+                  "form.bundle.js",
+                  "controls.bundle.js",
+                  "report.bundle.js",
+                  "erpnext.bundle.css",
+                  "hrms.bundle.css",
+              )
+              def file_exists_for_web_path(p):
+                  if not isinstance(p, str) or not p.startswith("/assets/"):
+                      return False
+                  disk_path = os.path.join("/home/frappe/frappe-bench/sites", p.lstrip("/"))
+                  return os.path.exists(disk_path)
+              invalid = (
+                  not isinstance(current, dict)
+                  or len(current) == 0
+                  or any((not isinstance(v, str) or not v.startswith("/assets/")) for v in current.values())
+                  or any((not file_exists_for_web_path(v)) for v in current.values())
+                  or any((k not in current) for k in required_keys)
+              )
+
+              if invalid:
+                  built = {}
+                  hash_bundle_re = re.compile(r"^(?P<name>.+)\.bundle\.[A-Za-z0-9]+\.(?P<ext>js|css)$")
+
+                  for root, _, files in os.walk(assets_root, followlinks=True):
+                      rel_root = os.path.relpath(root, assets_root)
+                      rel_root = "" if rel_root == "." else rel_root.replace("\\", "/")
+                      for fn in sorted(files):
+                          rel = f"{rel_root}/{fn}" if rel_root else fn
+                          rel = rel.replace("\\", "/")
+                          web_path = f"/assets/{rel}"
+
+                          m = hash_bundle_re.match(fn)
+                          if m:
+                              key = f"{m.group('name')}.bundle.{m.group('ext')}"
+                              built.setdefault(key, web_path)
+
+                              if m.group("name") == "desk":
+                                  if m.group("ext") == "js":
+                                      built["app.bundle.js"] = web_path
+                                  elif m.group("ext") == "css":
+                                      built["app.bundle.css"] = web_path
+
+                          if fn.endswith(".min.js") or fn.endswith(".min.css"):
+                              built.setdefault(fn, web_path)
+
+                  if built:
+                      with open(assets_json, "w", encoding="utf-8") as f:
+                          json.dump(built, f, separators=(",", ":"), sort_keys=True)
+                      print(f"Generated assets.json with {len(built)} entries")
+                  else:
+                      print("WARN: Could not synthesize assets.json from sites/assets")
+              PY
+
+              if [ ! -s "$ASSETS_DIR/assets.json" ] || ! /home/frappe/frappe-bench/env/bin/python3 -c "import json,os,sys; d=json.load(open('$ASSETS_DIR/assets.json')); req=('app.bundle.js','app.bundle.css','libs.bundle.js','desk.bundle.js','list.bundle.js','form.bundle.js','controls.bundle.js','report.bundle.js','erpnext.bundle.css','hrms.bundle.css'); ok=isinstance(d,dict) and all(k in d for k in req) and all(isinstance(v,str) and v.startswith('/assets/') and os.path.exists('/home/frappe/frappe-bench/sites/'+v.lstrip('/')) for v in d.values()); sys.exit(0 if ok else 1)"; then
+                echo "ERROR: assets.json is missing/empty after recovery; refusing to start with broken assets"
+                exit 1
+              fi
+
+              echo "Clearing stale assets cache from Redis..."
+              /home/frappe/frappe-bench/env/bin/python3 -c "
+              import json, redis
+              try:
+                  cfg = json.load(open('/home/frappe/frappe-bench/sites/common_site_config.json'))
+                  r = redis.Redis.from_url(cfg.get('redis_cache', ''))
+                  cleared = 0
+                  for k in r.keys('*assets_json*'):
+                      r.delete(k)
+                      cleared += 1
+                  print('Cleared %d stale assets cache keys' % cleared)
+              except Exception as e:
+                  print('Cache clear skipped: %s' % e)
+              " || echo "Redis flush skipped"
+          volumeMounts:
+            - name: sites-dir
+              mountPath: /home/frappe/frappe-bench/sites
+      {{- if .Values.worker.gunicorn.initContainers }}
+        {{- toYaml .Values.worker.gunicorn.initContainers | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: gunicorn
+          env:
+            - name: SITES_PATH
+              value: /home/frappe/frappe-bench/sites
+            - name: DEFAULT_SITE
+              value: {{ .Values.jobs.installApp.siteName | quote }}
+            {{- if .Values.worker.gunicorn.envVars }}
+            {{- toYaml .Values.worker.gunicorn.envVars | nindent 12 }}
+            {{- end }}
+          {{- $siteName := .Values.jobs.installApp.siteName }}
+          {{- if .Values.worker.gunicorn.increaseFileLimit }}
+          command: ["/bin/bash", "-c"]
+          args:
+            - "ln -sfn /home/frappe/frappe-bench/sites/{{ $siteName }} /home/frappe/frappe-bench/{{ $siteName }} 2>/dev/null; rm -rf /home/frappe/frappe-bench/assets; ln -s /home/frappe/frappe-bench/sites/assets /home/frappe/frappe-bench/assets 2>/dev/null; cd /home/frappe/frappe-bench && ulimit -n 65536 && exec {{ join " " .Values.worker.gunicorn.args }}"
+          {{- else }}
+          command: ["/bin/bash", "-c"]
+          args:
+            - "ln -sfn /home/frappe/frappe-bench/sites/{{ $siteName }} /home/frappe/frappe-bench/{{ $siteName }} 2>/dev/null; rm -rf /home/frappe/frappe-bench/assets; ln -s /home/frappe/frappe-bench/sites/assets /home/frappe/frappe-bench/assets 2>/dev/null; cd /home/frappe/frappe-bench && exec {{ join " " .Values.worker.gunicorn.args }}"
+          {{- end }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: {{ include "erpnext.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          volumeMounts:
+          - name: sites-dir
+            mountPath: /home/frappe/frappe-bench/sites
+          - name: logs
+            mountPath: /home/frappe/frappe-bench/logs
+          - name: logs
+            mountPath: /home/frappe/logs
+          ports:
+            - name: http
+              containerPort: {{ .Values.worker.gunicorn.service.port }}
+              protocol: TCP
+          livenessProbe:
+            {{- toYaml .Values.worker.gunicorn.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.worker.gunicorn.readinessProbe | nindent 12 }}
+          resources:
+            {{- toYaml .Values.worker.gunicorn.resources | nindent 12 }}
+      {{- if .Values.worker.gunicorn.sidecars }}
+        {{- toYaml .Values.worker.gunicorn.sidecars | nindent 8 }}
+      {{- end }}
+      volumes:
+        - name: sites-dir
+          {{- if .Values.persistence.worker.enabled }}
+          persistentVolumeClaim:
+            {{- if .Values.persistence.worker.existingClaim }}
+            claimName: {{ .Values.persistence.worker.existingClaim }}
+            {{- else }}
+            claimName: {{ template "erpnext.fullname" . }}
+            {{- end }}
+            readOnly: false
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: logs
+          {{- if .Values.persistence.logs.enabled }}
+          persistentVolumeClaim:
+            {{- if .Values.persistence.logs.existingClaim }}
+            claimName: {{ .Values.persistence.logs.existingClaim }}
+            {{- else }}
+            claimName: {{ template "erpnext.fullname" . }}-logs
+            {{- end }}
+            readOnly: false
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+      {{- with .Values.worker.gunicorn.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    {{- with .Values.worker.gunicorn.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+    {{- end }}
+    {{- with .Values.worker.gunicorn.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+    {{- end }}

@@ -1,0 +1,137 @@
+{{- if .Values.jobs.installApp.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ template "erpnext.fullname" . }}-install-app-{{ now | date "20060102150405" }}
+  labels:
+    {{- include "erpnext.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  backoffLimit: {{ .Values.jobs.installApp.backoffLimit | default 2 }}
+  ttlSecondsAfterFinished: {{ .Values.jobs.installApp.ttlSecondsAfterFinished | default 600 }}
+  template:
+    spec:
+    {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+    {{- end }}
+      serviceAccountName: {{ template "erpnext.serviceAccountName" $ }}
+      securityContext:
+        {{- toYaml $.Values.podSecurityContext | nindent 8 }}
+      containers:
+      - name: install-app
+        image: {{ include "erpnext.image" . | quote }}
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        command: ["bash", "-c"]
+        args:
+          - |
+            set -e
+            SITE="{{ .Values.jobs.installApp.siteName }}"
+            APPS_FILE="/home/frappe/frappe-bench/sites/apps.txt"
+
+            echo "$SITE" > /home/frappe/frappe-bench/sites/currentsite.txt
+
+            # Remove apps that are no longer in the image
+            {{- range .Values.jobs.installApp.removeApps }}
+            if grep -qxF "{{ . }}" "$APPS_FILE" 2>/dev/null; then
+              sed -i '/^{{ . }}$/d' "$APPS_FILE"
+              echo "  Removed {{ . }} from apps.txt"
+            fi
+            # Also remove from DB installed_apps so Frappe does not try to load it
+            bench --site "$SITE" remove-from-installed-apps "{{ . }}" 2>/dev/null || echo "  WARN: bench remove-from-installed-apps {{ . }} skipped"
+            {{- end }}
+
+            echo "Ensuring apps.txt includes required apps..."
+            {{- range .Values.jobs.installApp.apps }}
+            if [ ! -d "/home/frappe/frappe-bench/apps/{{ . }}" ]; then
+              echo "ERROR: app '{{ . }}' is configured in values.yaml but not present in the image at /home/frappe/frappe-bench/apps/{{ . }}"
+              echo "Rebuild image with this app in erpnext-build/apps.json, then sync again."
+              exit 1
+            fi
+            if ! grep -qxF "{{ . }}" "$APPS_FILE" 2>/dev/null; then
+              echo "{{ . }}" >> "$APPS_FILE"
+              echo "  Added {{ . }} to apps.txt"
+            fi
+            {{- end }}
+
+            echo "Installing missing apps on site $SITE..."
+            {{- range .Values.jobs.installApp.apps }}
+            if bench --site "$SITE" list-apps | grep -qx "{{ . }}"; then
+              echo "  -> {{ . }} already installed"
+            else
+              echo "  -> installing {{ . }}"
+              if bench --site "$SITE" install-app {{ . }} --force; then
+                echo "  -> {{ . }} installed successfully"
+              else
+                # Some apps may be effectively installed even when install-app exits non-zero
+                # (for example duplicate setup inserts during after_install hooks).
+                if bench --site "$SITE" list-apps | grep -qx "{{ . }}"; then
+                  echo "  WARN: install-app {{ . }} returned non-zero, but app is already installed; continuing"
+                else
+                  echo "  WARN: install-app {{ . }} failed and app is still missing; continuing to keep hook non-blocking"
+                fi
+              fi
+            fi
+            {{- end }}
+
+            {{- if .Values.jobs.installApp.defaultTheme }}
+            echo "Setting default theme to {{ .Values.jobs.installApp.defaultTheme }}..."
+            bench --site "$SITE" set-config -g default_website_theme {{ .Values.jobs.installApp.defaultTheme | quote }}
+            {{- end }}
+
+            bench --site "$SITE" clear-cache
+            echo "Done."
+        env:
+          - name: "SITE_NAME"
+            value: "{{ .Values.jobs.installApp.siteName }}"
+        resources:
+          {{- toYaml .Values.jobs.installApp.resources | nindent 10 }}
+        securityContext:
+          {{- toYaml $.Values.securityContext | nindent 10 }}
+        volumeMounts:
+          - name: sites-dir
+            mountPath: /home/frappe/frappe-bench/sites
+          - name: logs
+            mountPath: /home/frappe/frappe-bench/logs
+      restartPolicy: Never
+      volumes:
+        - name: sites-dir
+          {{- if .Values.persistence.worker.enabled }}
+          persistentVolumeClaim:
+            {{- if .Values.persistence.worker.existingClaim }}
+            claimName: {{ .Values.persistence.worker.existingClaim }}
+            {{- else }}
+            claimName: {{ template "erpnext.fullname" . }}
+            {{- end }}
+            readOnly: false
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: logs
+          {{- if .Values.persistence.logs.enabled }}
+          persistentVolumeClaim:
+            {{- if .Values.persistence.logs.existingClaim }}
+            claimName: {{ .Values.persistence.logs.existingClaim }}
+            {{- else }}
+            claimName: {{ template "erpnext.fullname" . }}-logs
+            {{- end }}
+            readOnly: false
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+      {{- with .Values.jobs.installApp.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.jobs.installApp.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.jobs.installApp.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

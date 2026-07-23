@@ -1,0 +1,33 @@
+# The 3rd, data-less Sentinel vote for each of the 3 redis roles (cache/queue/
+# socketio) — one combined pod (deployment.yaml) running 3 plain `redis-sentinel`
+# processes, rather than 3 separate pods, since each is a tiny stateless watcher.
+#
+# VERIFY BEFORE FIRST SYNC: the <role>-master service names below assume ArgoCD sets
+# the Helm release name equal to the Application name (redis-cache-ha, redis-queue-ha,
+# redis-socketio-ha), giving bitnami's chart-default `<release>-master` service names.
+# Confirm with `kubectl get svc -n erpnext` after the 3 redis-*-ha Applications have
+# synced at least once, and correct the hostnames here if they differ.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: redis-sentinel-arbiter-conf
+  namespace: erpnext
+data:
+  sentinel-cache.conf: |
+    port 26379
+    sentinel monitor mymaster redis-cache-ha-master 6379 2
+    sentinel down-after-milliseconds mymaster 5000
+    sentinel failover-timeout mymaster 60000
+    sentinel parallel-syncs mymaster 1
+  sentinel-queue.conf: |
+    port 26380
+    sentinel monitor mymaster redis-queue-ha-master 6379 2
+    sentinel down-after-milliseconds mymaster 5000
+    sentinel failover-timeout mymaster 60000
+    sentinel parallel-syncs mymaster 1
+  sentinel-socketio.conf: |
+    port 26381
+    sentinel monitor mymaster redis-socketio-ha-master 6379 2
+    sentinel down-after-milliseconds mymaster 5000
+    sentinel failover-timeout mymaster 60000
+    sentinel parallel-syncs mymaster 1

@@ -1,0 +1,216 @@
+{{- if .Values.jobs.createSite.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ template "erpnext.fullname" . }}-new-site-{{ now | date "20060102150405" }}
+  labels:
+    {{- include "erpnext.labels" . | nindent 4 }}
+spec:
+  backoffLimit: {{ .Values.jobs.createSite.backoffLimit }}
+  template:
+    spec:
+    {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+    {{- end }}
+      serviceAccountName: {{ template "erpnext.serviceAccountName" $ }}
+      securityContext:
+        {{- toYaml $.Values.podSecurityContext | nindent 8 }}
+      initContainers:
+        - name: wait-for-mariadb
+          image: {{ include "erpnext.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["python3", "-c"]
+          args:
+            - |
+              import socket, os, time, sys
+              host = os.environ.get("DB_HOST", "localhost")
+              port = int(os.environ.get("DB_PORT", "3306"))
+              for i in range(240):
+                try:
+                  s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                  s.settimeout(3)
+                  s.connect((host, port))
+                  s.close()
+                  print("MariaDB reachable at %s:%s" % (host, port))
+                  sys.exit(0)
+                except Exception as e:
+                  if (i + 1) % 6 == 0:
+                    print("Attempt %s: %s" % (i + 1, e))
+                time.sleep(5)
+              print("Timeout (20 min) waiting for MariaDB at %s:%s" % (host, port))
+              sys.exit(1)
+          env:
+            - name: DB_HOST
+              {{- if .Values.mariadb.enabled }}
+              {{- if eq .Values.mariadb.architecture "replication" }}
+              value: {{ .Release.Name }}-mariadb-primary
+              {{- else }}
+              value: {{ .Release.Name }}-mariadb
+              {{- end }}
+              {{- else }}
+              value: {{ .Values.dbHost | default "localhost" | quote }}
+              {{- end }}
+            - name: DB_PORT
+              {{- if .Values.dbPort }}
+              value: {{ .Values.dbPort | quote }}
+              {{- else if .Values.mariadb.enabled }}
+              value: {{ .Values.mariadb.primary.service.ports.mysql | default "3306" | quote }}
+              {{- else }}
+              value: "3306"
+              {{- end }}
+        - name: validate-config
+          image: {{ include "erpnext.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["bash", "-c"]
+          args:
+            - >
+              export start=`date +%s`;
+              until [[ -n `grep -hs ^ sites/common_site_config.json | jq -r ".db_host // empty"` ]] && \
+                [[ -n `grep -hs ^ sites/common_site_config.json | jq -r ".redis_cache // empty"` ]] && \
+                [[ -n `grep -hs ^ sites/common_site_config.json | jq -r ".redis_queue // empty"` ]];
+              do
+                echo "Waiting for sites/common_site_config.json to be created";
+                sleep 5;
+                if (( `date +%s`-start > 600 )); then
+                  echo "could not find sites/common_site_config.json with required keys";
+                  exit 1
+                fi
+              done;
+              echo "sites/common_site_config.json found";
+          resources:
+            {{- toYaml .Values.jobs.createSite.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml $.Values.securityContext | nindent 12 }}
+          volumeMounts:
+            - name: sites-dir
+              mountPath: /home/frappe/frappe-bench/sites
+      containers:
+      - name: create-site
+        image: {{ include "erpnext.image" . | quote }}
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        command: ["bash", "-c"]
+        args:
+          - >
+            bench new-site $(SITE_NAME)
+            --no-mariadb-socket
+            --db-type=$(DB_TYPE)
+            --db-host=$(DB_HOST)
+            --db-port=$(DB_PORT)
+            --admin-password=$(ADMIN_PASSWORD)
+            --mariadb-root-username=$(DB_ROOT_USER)
+            --mariadb-root-password=$(DB_ROOT_PASSWORD)
+        {{- if .Values.jobs.createSite.installApps }}
+          {{- range .Values.jobs.createSite.installApps }}
+            --install-app={{ . }}
+          {{- end }}
+        {{- end }}
+          {{- if .Values.jobs.createSite.forceCreate }}
+            --force
+          {{- end }}
+            {{- if .Values.jobs.createSite.defaultTheme }}
+            && bench --site $(SITE_NAME) set-config -g default_website_theme {{ .Values.jobs.createSite.defaultTheme | quote }}
+            {{- end }}
+            && echo -n $(SITE_NAME) > /home/frappe/frappe-bench/sites/currentsite.txt
+        env:
+          - name: "SITE_NAME"
+            value: "{{ .Values.jobs.createSite.siteName }}"
+          - name: "DB_TYPE"
+            value: {{ .Values.jobs.createSite.dbType }}
+          - name: "DB_HOST"
+            {{- if .Values.postgresql.host }}
+            value: {{ .Values.postgresql.host }}
+            {{- else if .Values.postgresql.enabled }}
+            value: {{ .Release.Name }}-postgresql
+            {{- else if .Values.mariadb.enabled }}
+            {{- if eq .Values.mariadb.architecture "replication" }}
+            value: {{ .Release.Name }}-mariadb-primary
+            {{- else }}
+            value: {{ .Release.Name }}-mariadb
+            {{- end }}
+            {{- else }}
+            value: "{{ .Values.dbHost }}"
+            {{- end }}
+          - name: "DB_PORT"
+            {{- if .Values.dbPort }}
+            value: {{ .Values.dbPort | quote }}
+            {{- else if .Values.postgresql.enabled }}
+            value: {{ .Values.postgresql.primary.service.ports.postgresql | quote }}
+            {{- else }}
+            value: {{ .Values.mariadb.primary.service.ports.mysql | quote }}
+            {{- end }}
+          - name: "DB_ROOT_USER"
+            {{- if .Values.dbRootUser }}
+            value: "{{ .Values.dbRootUser }}"
+            {{- else if .Values.postgresql.enabled }}
+            value: "postgres"
+            {{- else if .Values.mariadb.enabled }}
+            value: "root"
+            {{- end }}
+          - name: "DB_ROOT_PASSWORD"
+            {{- if .Values.dbRootPassword }}
+            valueFrom:
+              secretKeyRef:
+                key:  db-root-password
+                name: {{ .Release.Name }}
+            {{- else if .Values.postgresql.enabled }}
+            valueFrom:
+              secretKeyRef:
+                key: postgres-password
+                name: {{ .Release.Name }}-postgresql
+            {{- else if .Values.mariadb.enabled }}
+            valueFrom:
+              secretKeyRef:
+                key: mariadb-root-password
+                name: {{ .Release.Name }}-mariadb
+            {{- end }}
+          - name: "ADMIN_PASSWORD"
+            value: "{{ .Values.jobs.createSite.adminPassword }}"
+        resources:
+          {{- toYaml .Values.jobs.createSite.resources | nindent 10 }}
+        securityContext:
+          {{- toYaml $.Values.securityContext | nindent 10 }}
+        volumeMounts:
+          - name: sites-dir
+            mountPath: /home/frappe/frappe-bench/sites
+          - name: logs
+            mountPath: /home/frappe/frappe-bench/logs
+      restartPolicy: Never
+      volumes:
+        - name: sites-dir
+          {{- if .Values.persistence.worker.enabled }}
+          persistentVolumeClaim:
+            {{- if .Values.persistence.worker.existingClaim }}
+            claimName: {{ .Values.persistence.worker.existingClaim }}
+            {{- else }}
+            claimName: {{ template "erpnext.fullname" . }}
+            {{- end }}
+            readOnly: false
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: logs
+          {{- if .Values.persistence.logs.enabled }}
+          persistentVolumeClaim:
+            {{- if .Values.persistence.logs.existingClaim }}
+            claimName: {{ .Values.persistence.logs.existingClaim }}
+            {{- else }}
+            claimName: {{ template "erpnext.fullname" . }}-logs
+            {{- end }}
+            readOnly: false
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+      {{- with .Values.jobs.createSite.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.jobs.createSite.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.jobs.createSite.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

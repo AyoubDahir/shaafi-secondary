@@ -1,0 +1,22 @@
+{{- if .Values.keda.enabled }}
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: {{ include "erpnext.fullname" . }}-worker-l
+  labels:
+    {{- include "erpnext.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    name: {{ include "erpnext.fullname" . }}-worker-l
+  pollingInterval: 15
+  cooldownPeriod: 600
+  minReplicaCount: {{ .Values.keda.workerL.minReplicas | default 2 }}
+  maxReplicaCount: {{ .Values.keda.workerL.maxReplicas | default 3 }}
+  triggers:
+    - type: redis
+      metadata:
+        address: {{ include "erpnext.fullname" . }}-redis-queue-master.{{ .Release.Namespace }}.svc.cluster.local:6379
+        listName: "long"
+        listLength: {{ .Values.keda.workerL.queueThreshold | default "3" | quote }}
+        activationListLength: "1"
+{{- end }}

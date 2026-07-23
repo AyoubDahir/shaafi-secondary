@@ -1,0 +1,58 @@
+# Real Galera cluster for the secondary site: 2 data nodes (ShaafiControl1 +
+# shaaficontrol2, hard-anti-affinity so they always land one-per-node) + a separate
+# garbd Application (apps/garbd.yaml) acting as the 3rd, data-less vote so the cluster
+# has real odd-numbered quorum today instead of waiting for the VPS. When the VPS
+# joins later, garbd relocates there and this stays a straight 2-data-node cluster.
+#
+# VERIFY BEFORE FIRST SYNC: pin an exact chart version and cross-check these value
+# paths against `helm show values bitnami/mariadb-galera --version <pinned>` —
+# written from the well-known Bitnami chart conventions (rootUser/db/persistence/
+# podAntiAffinityPreset/galera.*) but not hand-verified against this exact chart
+# version's schema.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: mariadb-galera
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  project: default
+  source:
+    repoURL: https://charts.bitnami.com/bitnami
+    chart: mariadb-galera
+    targetRevision: 8.6.6 # VERIFY: pin to the actual latest at implementation time
+    helm:
+      values: |
+        replicaCount: 2
+        podAntiAffinityPreset: hard
+        rootUser:
+          existingSecret: mariadb-galera-secret
+          existingSecretPasswordKey: mariadb-root-password
+        galera:
+          name: shaafi-secondary-galera
+          mariabackup:
+            password: ""
+            existingSecret: mariadb-galera-secret
+            existingSecretPasswordKey: mariabackup-password
+        persistence:
+          enabled: true
+          storageClass: longhorn-nvme
+          size: 20Gi
+        service:
+          ports:
+            mysql: 3306
+        containerPorts:
+          mysql: 3306
+          galera: 4567
+          ist: 4568
+          sst: 4444
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: erpnext
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

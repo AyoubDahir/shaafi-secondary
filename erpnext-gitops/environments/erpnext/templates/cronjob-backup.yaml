@@ -1,0 +1,79 @@
+{{- if .Values.jobs.scheduledBackup.enabled }}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ template "erpnext.fullname" . }}-scheduled-backup
+  labels:
+    {{- include "erpnext.labels" . | nindent 4 }}
+spec:
+  schedule: {{ .Values.jobs.scheduledBackup.schedule | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        spec:
+        {{- with .Values.imagePullSecrets }}
+          imagePullSecrets:
+            {{- toYaml . | nindent 12 }}
+        {{- end }}
+          serviceAccountName: {{ template "erpnext.serviceAccountName" $ }}
+          securityContext:
+            {{- toYaml $.Values.podSecurityContext | nindent 12 }}
+          containers:
+          - name: backup
+            image: {{ include "erpnext.image" . | quote }}
+            imagePullPolicy: {{ .Values.image.pullPolicy }}
+            command: ["bash", "-c"]
+            args:
+              - |
+                set -e
+                SITE="{{ .Values.jobs.scheduledBackup.siteName }}"
+                STAMP="$(date +%Y-%m-%d_%H%M%S)"
+                DEST="/backups/${STAMP}"
+                mkdir -p "$DEST"
+
+                echo "[${STAMP}] Starting backup for ${SITE}..."
+                echo "$SITE" > sites/currentsite.txt
+                bench backup {{ if .Values.jobs.scheduledBackup.withFiles }}--with-files{{ end }}
+
+                cp -a "sites/${SITE}/private/backups/"* "$DEST/"
+                echo "Backup saved to ${DEST}"
+
+                echo "Cleaning HDD backups older than {{ .Values.jobs.scheduledBackup.retentionDays }} days..."
+                find /backups -maxdepth 1 -type d -mtime +{{ .Values.jobs.scheduledBackup.retentionDays }} -exec rm -rf {} + 2>/dev/null || true
+
+                echo "Cleaning sites PVC backup files older than 3 days..."
+                find "sites/${SITE}/private/backups/" -type f -mtime +3 -delete 2>/dev/null || true
+
+                echo "Backup complete"
+            securityContext:
+              {{- toYaml $.Values.securityContext | nindent 14 }}
+            volumeMounts:
+              - name: sites-dir
+                mountPath: /home/frappe/frappe-bench/sites
+              - name: backup-dir
+                mountPath: /backups
+          restartPolicy: Never
+          volumes:
+            - name: sites-dir
+              persistentVolumeClaim:
+                {{- if .Values.persistence.worker.existingClaim }}
+                claimName: {{ .Values.persistence.worker.existingClaim }}
+                {{- else }}
+                claimName: {{ template "erpnext.fullname" . }}
+                {{- end }}
+            - name: backup-dir
+              persistentVolumeClaim:
+                claimName: {{ .Values.jobs.scheduledBackup.backupVolume.existingClaim }}
+          {{- with .Values.jobs.scheduledBackup.nodeSelector }}
+          nodeSelector:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.jobs.scheduledBackup.tolerations }}
+          tolerations:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+{{- end }}

@@ -1,0 +1,17 @@
+# Inert until a real domain is pointed at the cluster — the letsencrypt-issuer
+# Application (apps/letsencrypt-issuer.yaml) has no automated syncPolicy on
+# purpose, so this ClusterIssuer only gets created when manually synced.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-prod
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: ayoubdahir@gmail.com
+    privateKeySecretRef:
+      name: letsencrypt-prod-key
+    solvers:
+      - http01:
+          ingress:
+            class: nginx

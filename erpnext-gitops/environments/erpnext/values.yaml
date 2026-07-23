@@ -1,0 +1,401 @@
+forceRedeploy: "1"
+image:
+  repository: ghcr.io/ayoubdahir/shaafi-custom
+  # Pinned to a known-good production tag — this repo has no build pipeline of its
+  # own (see README/git history: erpnext-build + .github were dropped on purpose,
+  # reusing the same image family the production repo already builds and publishes).
+  tag: 14a94ac9544d6f8d980443076edeed5ded3d2c0a
+  pullPolicy: Always
+imagePullSecrets:
+  - name: ghcr-pull-secret
+serviceAccount:
+  create: true
+  name: ""
+podSecurityContext: {}
+securityContext: {}
+persistence:
+  worker:
+    enabled: true
+    existingClaim: "erpnext-pvc"
+  logs:
+    enabled: true
+    existingClaim: "erpnext-logs-pvc"
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+  hosts:
+    - host: "shaafi-secondary.108-181-202-157.sslip.io"
+      paths:
+        - path: /
+          pathType: ImplementationSpecific
+  tls: []
+# dbHost: read by the chart's job templates when mariadb.enabled is false (it stays
+# false here too — Galera is deployed as its own separate Application,
+# apps/mariadb-galera.yaml, not via this chart's bundled standalone mariadb subchart).
+# VERIFY: exact in-cluster service DNS name once mariadb-galera has synced at least
+# once (kubectl get svc -n erpnext) — this assumes ArgoCD's default release-name
+# behavior (Helm release name == Application name == "mariadb-galera").
+dbHost: "mariadb-galera.erpnext.svc.cluster.local"
+jobs:
+  migrate:
+    enabled: true
+    backoffLimit: 1
+    siteName: "shaafi"
+    skipFailing: false
+    resources: {}
+    nodeSelector: {}
+    affinity: {}
+    tolerations: []
+  volumePermissions:
+    # First-sync-only: chowns fresh Longhorn volumes to the frappe uid. Flip back to
+    # false in a follow-up commit once confirmed via job logs.
+    enabled: true
+    backoffLimit: 0
+  configure:
+    enabled: true
+    backoffLimit: 2
+    fixVolume: false
+    resources: {}
+    companySetup:
+      enabled: false
+  createSite:
+    # First-bootstrap-only, same lifecycle prod's own git history already shows for
+    # this job: enabled true to create the fresh empty site, then flip back to false.
+    enabled: true
+    backoffLimit: 5
+    siteName: shaafi
+    dbType: mariadb
+    # Replace before first sync — not left as the chart default "changeit" since this
+    # becomes a real reachable site. Inject via a referenced Secret at apply time
+    # rather than committing a real password to git.
+    adminPassword: changeit
+    forceCreate: false
+    installApps:
+      - erpnext
+    defaultTheme: ""
+    resources: {}
+    nodeSelector: {}
+    affinity: {}
+    tolerations: []
+  installApp:
+    # First-bootstrap-only, same lifecycle as createSite above.
+    enabled: true
+    siteName: "shaafi"
+    apps:
+      - healthcare
+      - hrms
+      - his
+      - chat
+      - rasiin_hr
+      - rasiin_design
+      - shaafi_mobile_app
+      - dfp_external_storage
+    defaultTheme: ""
+    backoffLimit: 2
+    ttlSecondsAfterFinished: 300
+    resources: {}
+    nodeSelector: {}
+    affinity: {}
+    tolerations: []
+  setupWebsite:
+    enabled: false
+    siteName: "shaafi"
+    backoffLimit: 2
+    resources: {}
+    nodeSelector: {}
+    tolerations: []
+  grantSiteDbUser:
+    enabled: false
+    backoffLimit: 5
+    resources: {}
+  dropSite:
+    enabled: false
+    backoffLimit: 0
+    siteName: ""
+    forced: false
+  backup:
+    enabled: false
+    backoffLimit: 0
+    siteName: ""
+    withFiles: true
+  scheduledBackup:
+    enabled: true
+    schedule: "0 */6 * * *"
+    siteName: "shaafi"
+    withFiles: true
+    retentionDays: 14
+    backupVolume:
+      existingClaim: "erpnext-backup-pvc"
+    nodeSelector: {}
+    tolerations: []
+  custom:
+    enabled: false
+nginx:
+  replicaCount: 2
+  autoscaling:
+    enabled: false
+  configFile: "nginx-frappe.conf"
+  service:
+    type: ClusterIP
+    port: 8080
+  environment:
+    upstreamRealIPAddress: "127.0.0.1"
+    upstreamRealIPRecursive: "off"
+    upstreamRealIPHeader: "X-Forwarded-For"
+    frappeSiteNameHeader: "shaafi"
+  podSecurityContext:
+    runAsUser: 0
+    runAsGroup: 0
+    fsGroup: 0
+  containerSecurityContext:
+    runAsUser: 0
+    runAsGroup: 0
+  livenessProbe:
+    tcpSocket:
+      port: 8080
+    initialDelaySeconds: 5
+    periodSeconds: 10
+  readinessProbe:
+    tcpSocket:
+      port: 8080
+    initialDelaySeconds: 5
+    periodSeconds: 10
+  resources:
+    requests:
+      cpu: 100m
+      memory: 192Mi
+    limits:
+      cpu: 400m
+      memory: 384Mi
+  # No nodeSelector — this is exactly what the secondary cluster exists to eliminate.
+  # "Preferred" (not "required") anti-affinity: with only 2 app-tier nodes today, a
+  # hard rule would still be fine at replicaCount 2 (1-per-node is satisfiable), but
+  # kept preferred/uniform across all app tiers for consistency with the 3-replica
+  # tiers below, where a hard rule would leave the 3rd pod permanently Pending.
+  nodeSelector: {}
+  tolerations: []
+  affinity:
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            topologyKey: kubernetes.io/hostname
+            labelSelector:
+              matchLabels:
+                app.kubernetes.io/name: erpnext-nginx
+socketio:
+  replicaCount: 2
+  autoscaling:
+    enabled: false
+  service:
+    type: ClusterIP
+    port: 9000
+  livenessProbe:
+    tcpSocket:
+      port: 9000
+    initialDelaySeconds: 5
+    periodSeconds: 10
+  readinessProbe:
+    tcpSocket:
+      port: 9000
+    initialDelaySeconds: 5
+    periodSeconds: 10
+  resources:
+    requests:
+      cpu: 75m
+      memory: 128Mi
+    limits:
+      cpu: 300m
+      memory: 320Mi
+  nodeSelector: {}
+  tolerations: []
+  affinity:
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            topologyKey: kubernetes.io/hostname
+            labelSelector:
+              matchLabels:
+                app.kubernetes.io/name: erpnext-socketio
+worker:
+  gunicorn:
+    # Bumped 2 -> 3 to match the target architecture (PROJECT_PLANNING.md: gunicorn=3).
+    replicaCount: 3
+    autoscaling:
+      enabled: false
+    increaseFileLimit: true
+    args:
+      - /home/frappe/frappe-bench/env/bin/gunicorn
+      - --bind=0.0.0.0:8000
+      - --timeout=120
+      - --workers=2
+      - --preload
+      - frappe.app:application
+    livenessProbe:
+      tcpSocket:
+        port: 8000
+    readinessProbe:
+      tcpSocket:
+        port: 8000
+    service:
+      type: ClusterIP
+      port: 8000
+    resources:
+      requests:
+        cpu: 200m
+        memory: 384Mi
+      limits:
+        cpu: 800m
+        memory: 1024Mi
+    nodeSelector: {}
+    tolerations: []
+    # Must stay "preferred": replicaCount 3 across only 2 app-tier nodes means a hard
+    # rule would leave the 3rd replica permanently Pending (no 3rd node to satisfy
+    # strict one-pod-per-node exclusivity). This upgrades naturally to a real 3-way
+    # spread once/if a 3rd app-tier-capable node ever exists.
+    affinity:
+      podAntiAffinity:
+        preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              topologyKey: kubernetes.io/hostname
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: erpnext-gunicorn
+  default:
+    # Bumped 2 -> 3 to match the target architecture (PROJECT_PLANNING.md: workers=3).
+    replicaCount: 3
+    autoscaling:
+      enabled: false
+    livenessProbe:
+      override: false
+      probe: {}
+    readinessProbe:
+      override: false
+      probe: {}
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 768Mi
+    nodeSelector: {}
+    tolerations: []
+    affinity:
+      podAntiAffinity:
+        preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              topologyKey: kubernetes.io/hostname
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: erpnext-worker-d
+  short:
+    replicaCount: 3
+    autoscaling:
+      enabled: false
+    livenessProbe:
+      override: false
+      probe: {}
+    readinessProbe:
+      override: false
+      probe: {}
+    resources:
+      requests:
+        cpu: 75m
+        memory: 192Mi
+      limits:
+        cpu: 400m
+        memory: 512Mi
+    nodeSelector: {}
+    tolerations: []
+    affinity:
+      podAntiAffinity:
+        preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              topologyKey: kubernetes.io/hostname
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: erpnext-worker-s
+  long:
+    replicaCount: 3
+    autoscaling:
+      enabled: false
+    livenessProbe:
+      override: false
+      probe: {}
+    readinessProbe:
+      override: false
+      probe: {}
+    resources:
+      requests:
+        cpu: 75m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 896Mi
+    nodeSelector: {}
+    tolerations: []
+    affinity:
+      podAntiAffinity:
+        preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              topologyKey: kubernetes.io/hostname
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: erpnext-worker-l
+  scheduler:
+    # Singleton by design — ERPNext's scheduler can't run concurrently. No affinity:
+    # let it float freely to whichever node is healthy.
+    replicaCount: 1
+    livenessProbe:
+      override: false
+      probe: {}
+    readinessProbe:
+      override: false
+      probe: {}
+    resources:
+      requests:
+        cpu: 50m
+        memory: 160Mi
+      limits:
+        cpu: 250m
+        memory: 384Mi
+  healthProbe: |
+    exec:
+      command:
+        - bash
+        - -c
+        - echo "Ping backing services";
+    initialDelaySeconds: 15
+    periodSeconds: 5
+keda:
+  enabled: false
+# Redis: disabled here, deployed instead as 3 independent HA Applications
+# (apps/redis-cache-ha.yaml, apps/redis-queue-ha.yaml, apps/redis-socketio-ha.yaml —
+# master/replica + Sentinel each) plus apps/redis-sentinel-arbiter.yaml for the 3rd
+# vote. The chart's bundled redis subchart has no Sentinel support, so it can't be
+# used for this. VERIFY connection host/port once the redis-*-ha Applications have
+# synced (likely <release>-master / <release>-headless service names) — ERPNext's
+# redis connection strings are set via site_config.json by the createSite/migrate
+# jobs, not directly by these chart values; confirm how this chart wires them before
+# first sync.
+redis-cache:
+  enabled: false
+redis-queue:
+  enabled: false
+redis-socketio:
+  enabled: false
+postgresql:
+  enabled: false
+# mariadb: stays false — Galera is deployed independently (apps/mariadb-galera.yaml),
+# not via this chart's bundled standalone subchart. See dbHost above.
+mariadb:
+  enabled: false

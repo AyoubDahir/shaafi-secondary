@@ -1,0 +1,191 @@
+{{- if .Values.jobs.setupWebsite.enabled }}
+{{- $site := .Values.jobs.setupWebsite.siteName }}
+{{- $brand := .Values.jobs.setupWebsite.brandName | default "Alihsan Hospital" }}
+{{- $title := .Values.jobs.setupWebsite.pageTitle | default "Welcome to Alihsan Hospital" }}
+{{- $disableSignup := ternary 1 0 (.Values.jobs.setupWebsite.disableSignup | default false) }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ template "erpnext.fullname" . }}-setup-website-{{ now | date "20060102150405" }}
+  labels:
+    {{- include "erpnext.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: {{ .Values.jobs.setupWebsite.backoffLimit | default 2 }}
+  ttlSecondsAfterFinished: 600
+  template:
+    spec:
+    {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+    {{- end }}
+      serviceAccountName: {{ template "erpnext.serviceAccountName" $ }}
+      securityContext:
+        {{- toYaml $.Values.podSecurityContext | nindent 8 }}
+      containers:
+      - name: setup-website
+        image: {{ include "erpnext.image" . | quote }}
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        command: ["bash", "-c"]
+        args:
+          - |
+            set -e
+            cd /home/frappe/frappe-bench
+            SITE="{{ $site }}"
+            echo "$SITE" > sites/currentsite.txt
+
+            echo "=== [1/4] Enable Guest user ==="
+            echo "UPDATE tabUser SET enabled=1 WHERE name='Guest'" | bench --site "$SITE" mariadb
+            echo "Guest user enabled."
+
+            echo "=== [2/4] Update Website Settings and landing page ==="
+
+            cat > /tmp/page.css << 'CSSEOF'
+            .web-footer,.web-footer-container,.footer-subscribe,.website-footer,footer.web-footer{display:none!important}
+            .navbar,.web-navbar,header.navbar{display:none!important}
+            .page-header-wrapper,.page-header{display:none!important}
+            .main-column,.container.my-5,.page-content-wrapper{padding:0!important;margin:0!important;max-width:100%!important}
+            .container{max-width:100%!important;padding:0!important}
+            body[data-path="home"] .main-section{padding:0!important;margin:0!important}
+            *{margin:0;padding:0;box-sizing:border-box}
+            .al-page{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;color:#f1f5f9;overflow-x:hidden;background:#0f172a}
+            .al-nav{display:flex;align-items:center;justify-content:space-between;padding:20px 6%;background:rgba(15,23,42,0.8);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);position:sticky;top:0;z-index:100;border-bottom:1px solid rgba(255,255,255,0.06)}
+            .al-logo{display:flex;align-items:center;gap:10px;text-decoration:none}
+            .al-logo-icon{width:42px;height:42px;background:linear-gradient(135deg,#4f46e5,#7c3aed);border-radius:14px;display:flex;align-items:center;justify-content:center;box-shadow:0 4px 15px rgba(79,70,229,0.3)}
+            .al-logo-icon span{color:#fff;font-size:1.4rem;font-weight:800}
+            .al-logo-text{font-size:1.35rem;font-weight:700;color:#f1f5f9}
+            .al-nav-links{display:flex;gap:32px;align-items:center}
+            .al-nav-links a{color:#94a3b8;text-decoration:none;font-size:.95rem;font-weight:500;transition:color .2s}
+            .al-nav-links a:hover{color:#a5b4fc}
+            .al-btn{display:inline-block;padding:12px 32px;border-radius:14px;font-weight:600;font-size:1rem;text-decoration:none;transition:all .25s}
+            .al-btn-primary{background:linear-gradient(135deg,#4f46e5,#7c3aed);color:#fff;box-shadow:0 4px 20px rgba(79,70,229,.35)}
+            .al-btn-primary:hover{transform:translateY(-2px);box-shadow:0 8px 30px rgba(79,70,229,.5)}
+            .al-btn-outline{border:2px solid rgba(79,70,229,0.5);color:#a5b4fc;background:transparent}
+            .al-btn-outline:hover{background:rgba(79,70,229,0.15);color:#c7d2fe;border-color:#4f46e5}
+            .al-hero{display:flex;align-items:center;justify-content:center;min-height:88vh;padding:60px 6%;background:radial-gradient(circle at 20% 20%,#1e293b 0%,#0f172a 100%);position:relative}
+            .al-hero::after{content:"";position:absolute;top:0;right:0;width:45%;height:100%;background:radial-gradient(circle at 70% 50%,rgba(79,70,229,0.08),transparent 70%);pointer-events:none}
+            .al-hero-content{max-width:580px;z-index:1}
+            .al-badge{display:inline-flex;align-items:center;gap:8px;padding:8px 18px;background:rgba(79,70,229,.12);border:1px solid rgba(79,70,229,0.2);border-radius:100px;margin-bottom:28px}
+            .al-badge-dot{width:8px;height:8px;background:#4f46e5;border-radius:50%;animation:pulse 2s infinite}
+            .al-badge span{font-size:.85rem;font-weight:600;color:#a5b4fc;letter-spacing:.02em}
+            @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+            .al-hero h1{font-size:3.5rem;line-height:1.1;font-weight:800;color:#f1f5f9;margin-bottom:24px;letter-spacing:-.02em}
+            .al-hero h1 em{font-style:normal;background:linear-gradient(135deg,#818cf8,#a78bfa);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+            .al-hero p{font-size:1.2rem;color:#94a3b8;line-height:1.7;margin-bottom:40px}
+            .al-hero-btns{display:flex;gap:16px;flex-wrap:wrap}
+            .al-hero-visual{position:relative;z-index:1;margin-left:60px}
+            .al-hero-visual .al-card{background:rgba(30,41,59,0.8);backdrop-filter:blur(12px);border:1px solid rgba(255,255,255,0.06);border-radius:20px;padding:32px;box-shadow:0 20px 60px rgba(0,0,0,.3);width:340px}
+            .al-stats{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:20px}
+            .al-stat{background:rgba(15,23,42,0.6);border:1px solid rgba(255,255,255,0.05);border-radius:12px;padding:16px;text-align:center}
+            .al-stat .num{font-size:1.8rem;font-weight:800;color:#818cf8}
+            .al-stat .label{font-size:.78rem;color:#64748b;margin-top:4px;font-weight:500}
+            .al-features{padding:100px 6%;background:#0f172a}
+            .al-section-title{text-align:center;margin-bottom:60px}
+            .al-section-title h2{font-size:2.4rem;font-weight:800;color:#f1f5f9;margin-bottom:16px}
+            .al-section-title p{font-size:1.1rem;color:#94a3b8;max-width:520px;margin:0 auto}
+            .al-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:32px;max-width:1100px;margin:0 auto}
+            .al-feature{background:rgba(30,41,59,0.5);border-radius:16px;padding:36px 28px;transition:all .3s;border:1px solid rgba(255,255,255,0.05)}
+            .al-feature:hover{transform:translateY(-4px);box-shadow:0 12px 40px rgba(0,0,0,.2);border-color:rgba(79,70,229,0.3)}
+            .al-feature-icon{width:56px;height:56px;border-radius:14px;display:flex;align-items:center;justify-content:center;margin-bottom:20px;font-size:1.6rem}
+            .al-feature h3{font-size:1.15rem;font-weight:700;color:#f1f5f9;margin-bottom:10px}
+            .al-feature p{font-size:.92rem;color:#94a3b8;line-height:1.6}
+            .al-cta{padding:80px 6%;background:linear-gradient(135deg,#4f46e5,#7c3aed);text-align:center;position:relative;overflow:hidden}
+            .al-cta::before{content:"";position:absolute;top:-50%;right:-20%;width:400px;height:400px;background:rgba(255,255,255,.06);border-radius:50%}
+            .al-cta h2{font-size:2.2rem;font-weight:800;color:#fff;margin-bottom:16px;position:relative;z-index:1}
+            .al-cta p{font-size:1.1rem;color:rgba(255,255,255,.8);margin-bottom:36px;position:relative;z-index:1}
+            .al-cta .al-btn{background:#fff;color:#4f46e5;position:relative;z-index:1;font-weight:700}
+            .al-cta .al-btn:hover{transform:translateY(-2px);box-shadow:0 8px 30px rgba(0,0,0,.3)}
+            .al-footer{padding:40px 6%;background:#020617;text-align:center;border-top:1px solid rgba(255,255,255,0.05)}
+            .al-footer p{color:#64748b;font-size:.85rem}
+            .al-footer a{color:#818cf8;text-decoration:none}
+            @media(max-width:768px){.al-hero{flex-direction:column;text-align:center;min-height:auto;padding:40px 5%}.al-hero h1{font-size:2.2rem}.al-hero-visual{margin:40px 0 0;display:none}.al-hero-btns{justify-content:center}.al-grid{grid-template-columns:1fr}.al-nav-links{display:none}.al-hero::after{display:none}}
+            CSSEOF
+
+            cat > /tmp/page.html << 'HTMLEOF'
+            <div class="al-page">
+            <nav class="al-nav"><a href="/" class="al-logo"><div class="al-logo-icon"><span>A</span></div><div class="al-logo-text">{{ $brand }}</div></a><div class="al-nav-links"><a href="#features">Features</a><a href="#about">About</a><a href="/login" class="al-btn al-btn-primary">Sign In</a></div></nav>
+            <section class="al-hero"><div class="al-hero-content"><div class="al-badge"><div class="al-badge-dot"></div><span>Healthcare Management Platform</span></div><h1>Modern Healthcare,<br><em>Simplified.</em></h1><p>{{ $brand }} brings patient management, clinical workflows, billing, and analytics into one powerful, intuitive platform built for modern healthcare teams.</p><div class="al-hero-btns"><a href="/login" class="al-btn al-btn-primary">Get Started &rarr;</a><a href="#features" class="al-btn al-btn-outline">Explore Features</a></div></div><div class="al-hero-visual"><div class="al-card"><div style="display:flex;align-items:center;gap:12px;margin-bottom:8px"><div style="width:40px;height:40px;background:linear-gradient(135deg,#4f46e5,#7c3aed);border-radius:12px;display:flex;align-items:center;justify-content:center"><span style="color:#fff;font-weight:700;font-size:1.1rem">A</span></div><div><div style="font-weight:700;font-size:.95rem;color:#f1f5f9">{{ $brand }} HMS</div><div style="font-size:.78rem;color:#64748b">Real-time Dashboard</div></div></div><div class="al-stats"><div class="al-stat"><div class="num">2.4k</div><div class="label">Patients</div></div><div class="al-stat"><div class="num">98%</div><div class="label">Uptime</div></div><div class="al-stat"><div class="num">156</div><div class="label">Staff</div></div><div class="al-stat"><div class="num">24/7</div><div class="label">Support</div></div></div></div></div></section>
+            <section class="al-features" id="features"><div class="al-section-title"><h2>Everything You Need</h2><p>Comprehensive tools designed for hospitals, clinics, and healthcare organizations.</p></div><div class="al-grid"><div class="al-feature"><div class="al-feature-icon" style="background:rgba(79,70,229,0.15)">&#x1F3E5;</div><h3>Patient Management</h3><p>Complete electronic health records with medical history, allergies, prescriptions, and visit tracking.</p></div><div class="al-feature"><div class="al-feature-icon" style="background:rgba(16,185,129,0.12)">&#x1F4C5;</div><h3>Appointments</h3><p>Smart scheduling with automated reminders, doctor availability, and queue management.</p></div><div class="al-feature"><div class="al-feature-icon" style="background:rgba(245,158,11,0.12)">&#128176;</div><h3>Billing &amp; Insurance</h3><p>Streamlined invoicing, insurance claim processing, and payment tracking in one place.</p></div><div class="al-feature"><div class="al-feature-icon" style="background:rgba(236,72,153,0.12)">&#x1F489;</div><h3>Clinical Workflows</h3><p>Lab orders, radiology requests, prescriptions, and procedure documentation.</p></div><div class="al-feature"><div class="al-feature-icon" style="background:rgba(168,85,247,0.12)">&#128202;</div><h3>Analytics &amp; Reports</h3><p>Real-time dashboards, occupancy reports, revenue analytics, and performance metrics.</p></div><div class="al-feature"><div class="al-feature-icon" style="background:rgba(14,165,233,0.12)">&#x1F512;</div><h3>Secure &amp; Compliant</h3><p>Role-based access, audit trails, and data encryption for patient privacy.</p></div></div></section>
+            <section class="al-cta" id="about"><h2>Ready to Transform Your Healthcare Operations?</h2><p>Join modern healthcare facilities already using {{ $brand }} to deliver better patient care.</p><a href="/login" class="al-btn">Sign In to Dashboard &rarr;</a></section>
+            <footer class="al-footer"><p>&copy; 2026 <span style="color:#818cf8">primecare</span> &middot; Powered by <a href="https://erpnext.com" target="_blank">ERPNext</a> &amp; <a href="https://frappeframework.com" target="_blank">Frappe</a></p></footer>
+            </div>
+            HTMLEOF
+
+            HERO_HTML=$(cat /tmp/page.html | tr -d '\n' | sed "s/'/\\\\'/g")
+            PAGE_CSS=$(cat /tmp/page.css | tr -d '\n' | sed "s/'/\\\\'/g")
+
+            cat > /tmp/setup.sql << SQLEOF
+            DELETE FROM tabSingles WHERE doctype='Website Settings' AND field IN ('home_page','brand_html','disable_signup','hide_footer_signup','hide_login','navbar_template','footer_template');
+            INSERT INTO tabSingles (doctype, field, value) VALUES ('Website Settings', 'home_page', 'home');
+            INSERT INTO tabSingles (doctype, field, value) VALUES ('Website Settings', 'brand_html', '{{ $brand }}');
+            INSERT INTO tabSingles (doctype, field, value) VALUES ('Website Settings', 'disable_signup', '{{ $disableSignup }}');
+            INSERT INTO tabSingles (doctype, field, value) VALUES ('Website Settings', 'hide_footer_signup', '1');
+            DELETE FROM \`tabWeb Page\` WHERE route='home';
+            INSERT INTO \`tabWeb Page\`
+              (name, route, title, published, show_title, full_width, show_sidebar, insert_style, content_type, main_section, main_section_html, css,
+               creation, modified, owner, modified_by, docstatus)
+            VALUES
+              ('home', 'home', '{{ $title }}', 1, 0, 1, 0, 1, 'HTML',
+               '$HERO_HTML', '$HERO_HTML', '$PAGE_CSS',
+               NOW(), NOW(), 'Administrator', 'Administrator', 0);
+            SQLEOF
+            bench --site "$SITE" mariadb < /tmp/setup.sql
+            echo "Website Settings and landing page configured."
+
+            echo "=== [3/4] Set home_page in site config ==="
+            bench --site "$SITE" set-config -g home_page home || true
+
+            echo "=== [4/4] Clear caches ==="
+            bench --site "$SITE" clear-cache
+            bench --site "$SITE" clear-website-cache 2>/dev/null || true
+
+            echo "=== Website setup complete ==="
+        env:
+          - name: "SITE_NAME"
+            value: "{{ $site }}"
+        resources:
+          {{- toYaml .Values.jobs.setupWebsite.resources | nindent 10 }}
+        securityContext:
+          {{- toYaml $.Values.securityContext | nindent 10 }}
+        volumeMounts:
+          - name: sites-dir
+            mountPath: /home/frappe/frappe-bench/sites
+          - name: logs
+            mountPath: /home/frappe/frappe-bench/logs
+      restartPolicy: Never
+      volumes:
+        - name: sites-dir
+          {{- if .Values.persistence.worker.enabled }}
+          persistentVolumeClaim:
+            {{- if .Values.persistence.worker.existingClaim }}
+            claimName: {{ .Values.persistence.worker.existingClaim }}
+            {{- else }}
+            claimName: {{ template "erpnext.fullname" . }}
+            {{- end }}
+            readOnly: false
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: logs
+          {{- if .Values.persistence.logs.enabled }}
+          persistentVolumeClaim:
+            {{- if .Values.persistence.logs.existingClaim }}
+            claimName: {{ .Values.persistence.logs.existingClaim }}
+            {{- else }}
+            claimName: {{ template "erpnext.fullname" . }}-logs
+            {{- end }}
+            readOnly: false
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+      {{- with .Values.jobs.setupWebsite.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.jobs.setupWebsite.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}
