@@ -16,6 +16,15 @@
 #   returns 404 on Docker Hub — Broadcom now gates current Bitnami images behind a
 #   paid tier. The free mirror is docker.io/bitnamilegacy/mariadb-galera, confirmed to
 #   have this exact tag still published.
+# - ArgoCD v3.4.5's tag->digest resolution for OCI sources (a separate internal check
+#   from the actual `helm pull`, which works fine anonymously — confirmed by execing
+#   into argocd-repo-server and running it directly) gets a persistent 401 doing a raw
+#   HEAD against the registry for a bare tag like "16.0.1", even with an
+#   argocd.argoproj.io/secret-type=repository Secret registered for this host (tried
+#   both host-only and host+path url forms, plus restarting both repo-server and
+#   application-controller — no change). Workaround: pin targetRevision to the
+#   resolved digest directly (`helm pull ... --version 16.0.1` prints it) — a digest
+#   reference doesn't need the tag-resolution HEAD call at all.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -28,7 +37,7 @@ spec:
   source:
     repoURL: oci://registry-1.docker.io/bitnamicharts
     chart: mariadb-galera
-    targetRevision: 16.0.1
+    targetRevision: "sha256:ecf146d197eddfb3c473caeb8c9ddc5f54debe53a449e2d2ce9753764b02a6a9"
     helm:
       values: |
         global:
