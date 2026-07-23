@@ -1,0 +1,29 @@
+# Fixes an ERR_TOO_MANY_REDIRECTS loop on the ArgoCD UI (argocd.108-181-202-157.sslip.io):
+# ArgoCD's server defaults to assuming it sits behind TLS termination and issues an
+# HTTP->HTTPS redirect on every request. Our ingress deliberately has no TLS yet (no
+# real domain — see apps/letsencrypt-issuer.yaml), so the browser was redirected in a
+# loop that could never resolve. `server.insecure: "true"` tells argocd-server to stop
+# assuming/enforcing TLS.
+#
+# IMPORTANT — this alone is not enough after a fresh ArgoCD install: argocd-server only
+# reads this ConfigMap at startup, not live. After this Application first syncs onto a
+# brand-new ArgoCD install, the argocd-server Deployment must be restarted once by hand
+# (`kubectl rollout restart deployment argocd-server -n argocd`) for the setting to take
+# effect — ArgoCD doesn't auto-restart Deployments just because a ConfigMap they read
+# changed. This manifest is what makes the setting durable/git-tracked across
+# reinstalls; the one-time restart-after-first-sync step is not something GitOps can
+# automate away here.
+#
+# REVISIT once a real domain + cert-manager TLS is wired up (see apps/letsencrypt-issuer.yaml):
+# at that point remove this key (or set to "false") since a real cert makes the
+# HTTPS redirect correct and desirable again.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argocd-cmd-params-cm
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: argocd-cmd-params-cm
+    app.kubernetes.io/part-of: argocd
+data:
+  server.insecure: "true"

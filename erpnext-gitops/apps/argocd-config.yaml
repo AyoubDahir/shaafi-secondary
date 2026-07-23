@@ -1,0 +1,22 @@
+# Makes ArgoCD's own runtime config git-tracked instead of a standing manual
+# exception. Currently just fixes the HTTP/HTTPS redirect-loop setting — see
+# system/argocd-config/cmd-params-cm.yaml for the full story and the one-time
+# restart-after-first-sync caveat on a brand-new ArgoCD install.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: argocd-config
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/AyoubDahir/shaafi-secondary.git
+    targetRevision: HEAD
+    path: erpnext-gitops/system/argocd-config
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
