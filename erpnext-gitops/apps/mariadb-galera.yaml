@@ -4,11 +4,18 @@
 # has real odd-numbered quorum today instead of waiting for the VPS. When the VPS
 # joins later, garbd relocates there and this stays a straight 2-data-node cluster.
 #
-# VERIFY BEFORE FIRST SYNC: pin an exact chart version and cross-check these value
-# paths against `helm show values bitnami/mariadb-galera --version <pinned>` —
-# written from the well-known Bitnami chart conventions (rootUser/db/persistence/
-# podAntiAffinityPreset/galera.*) but not hand-verified against this exact chart
-# version's schema.
+# CONFIRMED against the actual chart (`helm show values oci://registry-1.docker.io/
+# bitnamicharts/mariadb-galera --version 16.0.1`), not guessed:
+# - The classic https://charts.bitnami.com/bitnami HTTP repo no longer carries this
+#   chart at all (nor at the "8.6.6" version originally guessed here, which never
+#   existed) — current versions are OCI-only.
+# - Password wiring is a single TOP-LEVEL `existingSecret` (not `rootUser.existingSecret`
+#   as first guessed), and the secret must contain exactly the keys
+#   mariadb-root-password / mariadb-galera-mariabackup-password / mariadb-password.
+# - The chart's own default image (docker.io/bitnami/mariadb-galera:12.0.2-debian-12-r0)
+#   returns 404 on Docker Hub — Broadcom now gates current Bitnami images behind a
+#   paid tier. The free mirror is docker.io/bitnamilegacy/mariadb-galera, confirmed to
+#   have this exact tag still published.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -19,22 +26,23 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: https://charts.bitnami.com/bitnami
+    repoURL: oci://registry-1.docker.io/bitnamicharts
     chart: mariadb-galera
-    targetRevision: 8.6.6 # VERIFY: pin to the actual latest at implementation time
+    targetRevision: 16.0.1
     helm:
       values: |
+        global:
+          security:
+            allowInsecureImages: true
+        image:
+          registry: docker.io
+          repository: bitnamilegacy/mariadb-galera
+          tag: 12.0.2-debian-12-r0
         replicaCount: 2
         podAntiAffinityPreset: hard
-        rootUser:
-          existingSecret: mariadb-galera-secret
-          existingSecretPasswordKey: mariadb-root-password
+        existingSecret: mariadb-galera-secret
         galera:
           name: shaafi-secondary-galera
-          mariabackup:
-            password: ""
-            existingSecret: mariadb-galera-secret
-            existingSecretPasswordKey: mariabackup-password
         persistence:
           enabled: true
           storageClass: longhorn-nvme
