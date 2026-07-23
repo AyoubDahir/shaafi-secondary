@@ -392,22 +392,24 @@ keda:
 # would render empty and break site bootstrap — this was a real gap in the first
 # draft, now fixed.
 #
-# VERIFY: <release>-master service names below assume ArgoCD sets the Helm release
-# name equal to the Application name (redis-cache-ha/redis-queue-ha/redis-socketio-ha)
-# — confirm with `kubectl get svc -n erpnext` once those Applications have synced.
-# Also VERIFY the "-master" Service is the one that follows Sentinel's elected
-# master after a failover (Bitnami's chart is documented to relabel/re-point it,
-# not just pin to pod-0 — but confirm behavior on the actual chart version pinned
-# in apps/redis-*-ha.yaml before relying on it for real failover).
+# CORRECTED live: originally guessed a "<release>-master" service name, which
+# doesn't exist — bitnami's redis chart docs state sentinel.enabled=true "disable[s]
+# the master and replicas services and create[s] a single Redis service" instead
+# (confirmed via `kubectl get svc -n erpnext`: only `<release>` and
+# `<release>-headless` exist). Fixed to the plain release name below. Since this one
+# combined service is how sentinel-mode clients are meant to connect in the first
+# place (Sentinel manages which pod behind it answers as master), this should be
+# resilient across failover — but that's still worth a live game-day check (kill the
+# current master pod, confirm ERPNext keeps working) before trusting it in anger.
 redis-cache:
   enabled: false
-  host: "redis://redis-cache-ha-master:6379"
+  host: "redis://redis-cache-ha:6379"
 redis-queue:
   enabled: false
-  host: "redis://redis-queue-ha-master:6379"
+  host: "redis://redis-queue-ha:6379"
 redis-socketio:
   enabled: false
-  host: "redis://redis-socketio-ha-master:6379"
+  host: "redis://redis-socketio-ha:6379"
 postgresql:
   enabled: false
 # mariadb.enabled stays false — Galera is deployed independently

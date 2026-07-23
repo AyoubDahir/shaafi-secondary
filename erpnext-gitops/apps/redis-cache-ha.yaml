@@ -5,8 +5,18 @@
 # role, each an independent master/replica pair (not one shared Redis for all three,
 # matching how the live prod repo already keeps them as 3 separate instances).
 #
-# VERIFY BEFORE FIRST SYNC: pin an exact chart version and cross-check value paths
-# against `helm show values bitnami/redis --version <pinned>`.
+# CONFIRMED against the real chart (`helm show values bitnami/redis --version
+# 17.3.17`), not guessed, after the first-draft assumptions turned out wrong:
+# - There is NO top-level `replicaCount` field in this chart version at all (it was
+#   silently ignored as an unknown key) — the field that actually controls total node
+#   count once sentinel.enabled=true is `replica.replicaCount` (chart doc: "this will
+#   disable the master and replicas services and create a single Redis service").
+#   First draft left this at 1, so only a single node+sentinel pod ever ran.
+# - Because sentinel mode collapses to one combined service, there is NO
+#   `<release>-master` service — only `<release>` (plain) and `<release>-headless`.
+#   Every place this repo referenced a "-master" hostname (values.yaml's
+#   redis-*.host fields, the sentinel-arbiter's sentinel.conf ConfigMap) was wrong
+#   and has been corrected to the plain service name.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -19,31 +29,18 @@ spec:
   source:
     repoURL: https://charts.bitnami.com/bitnami
     chart: redis
-    targetRevision: 17.3.17 # VERIFY: pin to the actual latest at implementation time
+    targetRevision: 17.3.17
     helm:
       values: |
         architecture: replication
-        # NOTE: when sentinel.enabled=true, bitnami's redis chart runs one
-        # StatefulSet of `replicaCount` nodes (each with an embedded sentinel
-        # sidecar) rather than separate master/replica Deployments — the
-        # master/replica sub-keys below still set persistence/anti-affinity,
-        # but VERIFY this top-level replicaCount is the field actually consulted
-        # for the chart version pinned above.
-        replicaCount: 2
         auth:
           enabled: false
         image:
           registry: docker.io
           repository: bitnamilegacy/redis
           tag: 7.0.7-debian-11-r0
-        master:
-          containerPorts:
-            redis: 6379
-          persistence:
-            storageClass: longhorn-nvme
-            size: 5Gi
         replica:
-          replicaCount: 1
+          replicaCount: 2
           containerPorts:
             redis: 6379
           persistence:
