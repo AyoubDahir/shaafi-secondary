@@ -4,11 +4,24 @@
 # has real odd-numbered quorum today instead of waiting for the VPS. When the VPS
 # joins later, garbd relocates there and this stays a straight 2-data-node cluster.
 #
-# CONFIRMED against the actual chart (`helm show values oci://registry-1.docker.io/
-# bitnamicharts/mariadb-galera --version 16.0.1`), not guessed:
-# - The classic https://charts.bitnami.com/bitnami HTTP repo no longer carries this
-#   chart at all (nor at the "8.6.6" version originally guessed here, which never
-#   existed) — current versions are OCI-only.
+# VENDORED, not sourced live from OCI (2026-07-23): ArgoCD v3.4.5's OCI tag/digest
+# resolution persistently 401s against Docker Hub's anonymous bearer-token flow — a
+# confirmed ArgoCD-internal bug, not a real auth/network issue (`helm pull` from
+# inside the argocd-repo-server pod succeeds every time; ArgoCD's own separate
+# revision-resolution check fails every time, tag or digest, regardless of repository
+# registration). Tried: hard-refresh, restarting repo-server and
+# application-controller, deleting+recreating the Application, registering an
+# anonymous Repository Secret (host-only and host+path forms), pinning to a resolved
+# digest instead of a tag — none of it worked. Workaround: the chart (version 16.0.1,
+# `helm pull oci://registry-1.docker.io/bitnamicharts/mariadb-galera --version
+# 16.0.1 --untar`) is vendored directly into this repo at
+# system/mariadb-galera-chart/ — it already bundled its own `common` library
+# dependency inside the package (charts/common/), so this is fully self-contained:
+# no OCI, no HTTP, no runtime chart-repo dependency of any kind at sync time. Same
+# pattern the erpnext chart itself already uses (a committed local chart tree).
+#
+# Other things CONFIRMED against the real chart (not guessed) while first setting
+# this up:
 # - Password wiring is a single TOP-LEVEL `existingSecret` (not `rootUser.existingSecret`
 #   as first guessed), and the secret must contain exactly the keys
 #   mariadb-root-password / mariadb-galera-mariabackup-password / mariadb-password.
@@ -16,15 +29,6 @@
 #   returns 404 on Docker Hub — Broadcom now gates current Bitnami images behind a
 #   paid tier. The free mirror is docker.io/bitnamilegacy/mariadb-galera, confirmed to
 #   have this exact tag still published.
-# - ArgoCD v3.4.5's tag->digest resolution for OCI sources (a separate internal check
-#   from the actual `helm pull`, which works fine anonymously — confirmed by execing
-#   into argocd-repo-server and running it directly) gets a persistent 401 doing a raw
-#   HEAD against the registry for a bare tag like "16.0.1", even with an
-#   argocd.argoproj.io/secret-type=repository Secret registered for this host (tried
-#   both host-only and host+path url forms, plus restarting both repo-server and
-#   application-controller — no change). Workaround: pin targetRevision to the
-#   resolved digest directly (`helm pull ... --version 16.0.1` prints it) — a digest
-#   reference doesn't need the tag-resolution HEAD call at all.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -35,9 +39,9 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: oci://registry-1.docker.io/bitnamicharts
-    chart: mariadb-galera
-    targetRevision: "sha256:ecf146d197eddfb3c473caeb8c9ddc5f54debe53a449e2d2ce9753764b02a6a9"
+    repoURL: https://github.com/AyoubDahir/shaafi-secondary.git
+    targetRevision: HEAD
+    path: erpnext-gitops/system/mariadb-galera-chart
     helm:
       values: |
         global:
