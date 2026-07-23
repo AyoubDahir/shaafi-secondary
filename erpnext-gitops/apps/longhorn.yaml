@@ -2,6 +2,18 @@
 # get disk annotations (kubectl annotate node ... node.longhorn.io/default-disks-config,
 # done by hand once nodes are Ready — see PROJECT_PLANNING / rollout notes), so the
 # future VPS control-plane node never receives a Longhorn replica automatically.
+#
+# CORRECTED live during first sync: `createDefaultDiskLabeledNodes` semantics are the
+# OPPOSITE of what the name suggests. `false` (the chart's own default, and what this
+# file originally had) means "auto-create a default disk at /var/lib/longhorn on
+# EVERY node regardless of labels" — it does NOT mean "never auto-create." That's
+# exactly what happened: both nodes got a stray default disk on the OS disk instead of
+# picking up the tagged nvme/sata disks from the node annotation, and every PVC failed
+# to provision with "specified disk tag nvme does not exist" until this was fixed to
+# `true` (which actually gates default-disk creation behind the
+# node.longhorn.io/create-default-disk=true label — a label neither node has, so no
+# node gets an unwanted default disk) and the two Node CRs were patched by hand to
+# replace the stray default disk with the correct 3-disk (nvme/nvme/sata) config.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -18,7 +30,7 @@ spec:
     helm:
       values: |
         defaultSettings:
-          createDefaultDiskLabeledNodes: false
+          createDefaultDiskLabeledNodes: true
           replicaSoftAntiAffinity: false
           replicaAutoBalance: least-effort
           defaultReplicaCount: 2

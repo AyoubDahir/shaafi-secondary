@@ -54,6 +54,16 @@ spec:
           enabled: true
           quorum: 2
           containerPort: 26379
+          # CONFIRMED live: the chart pulls a SEPARATE image for the sentinel sidecar
+          # (sentinel.image, distinct from the top-level image.* override above) —
+          # missed on the first pass, causing ImagePullBackOff on the chart's own
+          # default (docker.io/bitnami/redis-sentinel:7.0.6-debian-11-r1, which 404s
+          # post-Broadcom-paywall same as the other bitnami/* images in this repo).
+          # bitnamilegacy has this exact tag published.
+          image:
+            registry: docker.io
+            repository: bitnamilegacy/redis-sentinel
+            tag: 7.0.6-debian-11-r1
   destination:
     server: https://kubernetes.default.svc
     namespace: erpnext
