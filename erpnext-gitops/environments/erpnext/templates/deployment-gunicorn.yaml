@@ -61,6 +61,26 @@ spec:
               ln -sfn "$BUILT" "$ASSETS_DIR"
               echo "$ASSETS_DIR -> $(readlink -f "$ASSETS_DIR")"
 
+              # desk.bundle.{js,css} need an app.bundle.{js,css} alias for older
+              # templates that reference the "app" name directly. This is a tiny
+              # JSON read/write (through the symlink, into the image's own local
+              # copy) -- not a bulk file copy.
+              /home/frappe/frappe-bench/env/bin/python3 -c "
+              import json
+              p = '$ASSETS_DIR/assets.json'
+              d = json.load(open(p))
+              changed = False
+              if 'app.bundle.js' not in d and 'desk.bundle.js' in d:
+                  d['app.bundle.js'] = d['desk.bundle.js']
+                  changed = True
+              if 'app.bundle.css' not in d and 'desk.bundle.css' in d:
+                  d['app.bundle.css'] = d['desk.bundle.css']
+                  changed = True
+              if changed:
+                  json.dump(d, open(p, 'w'), separators=(',', ':'), sort_keys=True)
+                  print('Added app.bundle.js/css aliases')
+              "
+
               if ! /home/frappe/frappe-bench/env/bin/python3 -c "import json,os,sys; d=json.load(open('$ASSETS_DIR/assets.json')); req=('app.bundle.js','app.bundle.css','libs.bundle.js','desk.bundle.js','list.bundle.js','form.bundle.js','controls.bundle.js','report.bundle.js'); ok=isinstance(d,dict) and all(k in d for k in req) and all(isinstance(v,str) and v.startswith('/assets/') and os.path.exists('/home/frappe/frappe-bench/sites/'+v.lstrip('/')) for v in d.values()); sys.exit(0 if ok else 1)"; then
                 echo "ERROR: assets.json missing required bundle keys after symlink; refusing to start with broken assets"
                 exit 1
