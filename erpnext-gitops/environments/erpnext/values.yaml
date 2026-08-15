@@ -50,9 +50,9 @@ jobs:
     affinity: {}
     tolerations: []
   volumePermissions:
-    # First-sync-only: chowns fresh Longhorn volumes to the frappe uid. Flip back to
-    # false in a follow-up commit once confirmed via job logs.
-    enabled: true
+    # First-sync-only: chowns fresh Longhorn volumes to the frappe uid. Confirmed via
+    # job logs and 22+ days of stable uptime since — flipped off 2026-08-15.
+    enabled: false
     backoffLimit: 0
   configure:
     enabled: true
@@ -64,7 +64,10 @@ jobs:
   createSite:
     # First-bootstrap-only, same lifecycle prod's own git history already shows for
     # this job: enabled true to create the fresh empty site, then flip back to false.
-    enabled: true
+    # Site has existed and been serving traffic for 22+ days — flipped off 2026-08-15
+    # after this job was found silently retrying (backoffLimit 5) and failing every
+    # sync with "Site shaafi already exists", dragging Application health to Degraded.
+    enabled: false
     backoffLimit: 5
     siteName: shaafi
     dbType: mariadb
@@ -82,8 +85,12 @@ jobs:
     affinity: {}
     tolerations: []
   installApp:
-    # First-bootstrap-only, same lifecycle as createSite above.
-    enabled: true
+    # First-bootstrap-only, same lifecycle as createSite above. Flipped off
+    # 2026-08-15 — apps are already installed; job-configure-bench.yaml's own
+    # idempotent install-app loop (keyed off .apps below) remains as the ongoing
+    # safety net, so the .apps list here must stay populated even though this
+    # standalone PostSync job is now disabled.
+    enabled: false
     siteName: "shaafi"
     apps:
       - healthcare
