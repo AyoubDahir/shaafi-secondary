@@ -183,8 +183,13 @@ spec:
             - name: MARIADB_ROOT_PASSWORD
               valueFrom:
                 secretKeyRef:
+                {{- if .Values.dbRootPassword }}
+                  name: {{ .Release.Name }}
+                  key: db-root-password
+                {{- else }}
                   name: {{ .Release.Name }}-mariadb
                   key: mariadb-root-password
+                {{- end }}
           volumeMounts:
             - name: sites-dir
               mountPath: /home/frappe/frappe-bench/sites
