@@ -146,6 +146,12 @@ spec:
               try:
                   with conn.cursor() as cur:
                       cur.execute("CREATE USER IF NOT EXISTS '%s'@'%%' IDENTIFIED BY '%s'" % (db_name_esc, db_pass_esc))
+                      # CREATE USER IF NOT EXISTS silently skips IDENTIFIED BY when the
+                      # user already exists (e.g. site was recreated with a fresh random
+                      # db_password) -- ALTER USER unconditionally syncs the password to
+                      # whatever site_config.json currently has, every run. Idempotent:
+                      # a no-op when they already match.
+                      cur.execute("ALTER USER '%s'@'%%' IDENTIFIED BY '%s'" % (db_name_esc, db_pass_esc))
                       cur.execute("GRANT ALL PRIVILEGES ON `%s`.* TO '%s'@'%%'" % (db_name_backtick, db_name_esc))
                       cur.execute("FLUSH PRIVILEGES")
                   conn.commit()

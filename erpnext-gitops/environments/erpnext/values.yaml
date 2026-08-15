@@ -116,7 +116,11 @@ jobs:
     nodeSelector: {}
     tolerations: []
   grantSiteDbUser:
-    enabled: false
+    # Temporarily enabled 2026-08-15 to run the now-fixed ALTER USER password-sync
+    # (see job-grant-site-db-user.yaml) and clear the "_4d3994f22157e00c" access-denied
+    # error. Flip back to false once confirmed via job logs -- same one-shot lifecycle
+    # as createSite/installApp/volumePermissions above.
+    enabled: true
     backoffLimit: 5
     resources: {}
   dropSite:
