@@ -208,168 +208,29 @@ spec:
               echo "========================================"
 
               echo "========================================"
-              echo "Setting up assets..."
+              echo "Setting up assets (symlink to image-baked build, not a PVC copy)..."
               echo "========================================"
 
-              mkdir -p sites/assets
+              # Assets are identical on every pod (same image), disposable, and don't
+              # need to live on the shared NFS-backed PVC at all. Instead of copying
+              # thousands of files across pods/deploys (slow, and prone to the
+              # directory/symlink type conflicts a real merge can hit), just point
+              # sites/assets at the image's own pre-built copy. Since the symlink
+              # target is an absolute in-container path, this resolves correctly on
+              # every pod regardless of which pod's run created the symlink, and
+              # automatically tracks whichever image that pod is actually running.
               BUILT=/home/frappe/frappe-bench/.built-assets
-
-              if [ -d "$BUILT" ]; then
-                if [ -s "$BUILT/assets.json" ] && ! grep -Eq '^[[:space:]]*\{[[:space:]]*\}[[:space:]]*$' "$BUILT/assets.json"; then
-                  echo "Merging built assets from image (non-destructive)"
-                  cp -rf "$BUILT"/. sites/assets/ || true
-                else
-                  echo "WARN: .built-assets/assets.json missing/empty; skipping destructive image asset copy"
-                fi
-              else
-                echo "WARN: .built-assets not found"
+              if [ ! -d "$BUILT" ] || [ ! -s "$BUILT/assets.json" ]; then
+                echo "ERROR: $BUILT missing or assets.json empty/missing; image was not built with assets"
+                exit 1
               fi
 
-              # Ensure static assets from apps public/ are present on PVC.
-              for app in frappe erpnext healthcare hrms payments mma_design prime; do
-                SRC="/home/frappe/frappe-bench/apps/$app/$app/public"
-                DST="sites/assets/$app"
-                if [ -d "$SRC" ]; then
-                  mkdir -p "$DST"
-                  cp -rf "$SRC"/. "$DST"/ || true
-                fi
-              done
-              # bench build may recreate top-level app symlinks under sites/assets.
-              # Replace them with real directories/files on the shared PVC.
-              find sites/assets -maxdepth 1 -type l -delete 2>/dev/null || true
-              for app in frappe erpnext healthcare hrms payments mma_design prime; do
-                SRC="/home/frappe/frappe-bench/apps/$app/$app/public"
-                DST="sites/assets/$app"
-                if [ -d "$SRC" ]; then
-                  mkdir -p "$DST"
-                  cp -rLf "$SRC"/. "$DST"/ || true
-                fi
-              done
+              rm -rf sites/assets
+              ln -sfn "$BUILT" sites/assets
+              echo "sites/assets -> $(readlink -f sites/assets)"
 
-              # Materialize any symlinked assets (created by bench build) into real PVC files.
-              TMP_ASSETS=/tmp/materialized-assets
-              rm -rf "$TMP_ASSETS"
-              mkdir -p "$TMP_ASSETS"
-              cp -rL sites/assets/. "$TMP_ASSETS"/ 2>/dev/null || true
-              find sites/assets -mindepth 1 -maxdepth 1 -exec rm -rf {} +
-              cp -rf "$TMP_ASSETS"/. sites/assets/ || true
-
-              if [ ! -s sites/assets/assets.json ] || ! /home/frappe/frappe-bench/env/bin/python3 -c "import json,os,sys; d=json.load(open('sites/assets/assets.json')); req=('app.bundle.js','app.bundle.css','libs.bundle.js','desk.bundle.js','list.bundle.js','form.bundle.js','controls.bundle.js','report.bundle.js','erpnext.bundle.css','hrms.bundle.css'); ok=isinstance(d,dict) and all(k in d for k in req) and all(isinstance(v,str) and v.startswith('/assets/') and os.path.exists('/home/frappe/frappe-bench/sites/'+v.lstrip('/')) for v in d.values()); sys.exit(0 if ok else 1)" 2>/dev/null; then
-                echo "assets.json missing/empty; trying runtime build fallback..."
-                # Ensure bench build writes into the PVC-backed assets path.
-                rm -rf assets
-                ln -s "$(pwd)/sites/assets" assets
-                export NVM_DIR=/home/frappe/.nvm
-                for node_bin in /home/frappe/.nvm/versions/node/*/bin; do
-                  [ -d "$node_bin" ] && export PATH="$node_bin:$PATH"
-                done
-                export NODE_OPTIONS="${NODE_OPTIONS:-} --max-old-space-size=4096"
-                bench build --production
-              fi
-
-              # bench build writes generated dist files under app public paths in this container.
-              # Re-copy after build so generated assets land on the shared sites PVC.
-              find sites/assets -maxdepth 1 -type l -delete 2>/dev/null || true
-              for app in frappe erpnext healthcare hrms payments mma_design prime; do
-                SRC="/home/frappe/frappe-bench/apps/$app/$app/public"
-                DST="sites/assets/$app"
-                if [ -d "$SRC" ]; then
-                  mkdir -p "$DST"
-                  cp -rf "$SRC"/. "$DST"/ || true
-                fi
-              done
-              # Build runs in job container FS; materialize symlinked outputs into PVC-backed files.
-              TMP_ASSETS_POST=/tmp/materialized-assets-postbuild
-              rm -rf "$TMP_ASSETS_POST"
-              mkdir -p "$TMP_ASSETS_POST"
-              cp -rL sites/assets/. "$TMP_ASSETS_POST"/ 2>/dev/null || true
-              find sites/assets -mindepth 1 -maxdepth 1 -exec rm -rf {} +
-              cp -rf "$TMP_ASSETS_POST"/. sites/assets/ || true
-
-              if [ ! -s sites/assets/assets.json ] || ! /home/frappe/frappe-bench/env/bin/python3 -c "import json,sys; d=json.load(open('sites/assets/assets.json')); sys.exit(0 if isinstance(d, dict) and len(d) > 0 else 1)"; then
-                if [ -s "$BUILT/assets.json" ] && ! grep -Eq '^[[:space:]]*\{[[:space:]]*\}[[:space:]]*$' "$BUILT/assets.json"; then
-                  echo "Restoring assets.json from .built-assets"
-                  cp -f "$BUILT/assets.json" sites/assets/assets.json
-                fi
-              fi
-
-              /home/frappe/frappe-bench/env/bin/python3 - <<'PY'
-              import json
-              import os
-              import re
-
-              assets_root = "/home/frappe/frappe-bench/sites/assets"
-              assets_json = os.path.join(assets_root, "assets.json")
-
-              def load_json(path):
-                  try:
-                      with open(path, "r", encoding="utf-8") as f:
-                          return json.load(f)
-                  except Exception:
-                      return {}
-
-              current = load_json(assets_json)
-              required_keys = (
-                  "app.bundle.js",
-                  "app.bundle.css",
-                  "libs.bundle.js",
-                  "desk.bundle.js",
-                  "list.bundle.js",
-                  "form.bundle.js",
-                  "controls.bundle.js",
-                  "report.bundle.js",
-                  "erpnext.bundle.css",
-                  "hrms.bundle.css",
-              )
-              def file_exists_for_web_path(p):
-                  if not isinstance(p, str) or not p.startswith("/assets/"):
-                      return False
-                  disk_path = os.path.join("/home/frappe/frappe-bench/sites", p.lstrip("/"))
-                  return os.path.exists(disk_path)
-              invalid = (
-                  not isinstance(current, dict)
-                  or len(current) == 0
-                  or any((not isinstance(v, str) or not v.startswith("/assets/")) for v in current.values())
-                  or any((not file_exists_for_web_path(v)) for v in current.values())
-                  or any((k not in current) for k in required_keys)
-              )
-
-              if invalid:
-                  built = {}
-                  hash_bundle_re = re.compile(r"^(?P<name>.+)\.bundle\.[A-Za-z0-9]+\.(?P<ext>js|css)$")
-
-                  for root, _, files in os.walk(assets_root, followlinks=True):
-                      rel_root = os.path.relpath(root, assets_root)
-                      rel_root = "" if rel_root == "." else rel_root.replace("\\", "/")
-                      for fn in sorted(files):
-                          rel = f"{rel_root}/{fn}" if rel_root else fn
-                          rel = rel.replace("\\", "/")
-                          web_path = f"/assets/{rel}"
-
-                          m = hash_bundle_re.match(fn)
-                          if m:
-                              key = f"{m.group('name')}.bundle.{m.group('ext')}"
-                              built.setdefault(key, web_path)
-
-                              if m.group("name") == "desk":
-                                  if m.group("ext") == "js":
-                                      built["app.bundle.js"] = web_path
-                                  elif m.group("ext") == "css":
-                                      built["app.bundle.css"] = web_path
-
-                          if fn.endswith(".min.js") or fn.endswith(".min.css"):
-                              built.setdefault(fn, web_path)
-
-                  if built:
-                      with open(assets_json, "w", encoding="utf-8") as f:
-                          json.dump(built, f, separators=(",", ":"), sort_keys=True)
-                      print(f"Generated assets.json with {len(built)} entries")
-                  else:
-                      print("WARN: Could not synthesize assets.json from sites/assets")
-              PY
-
-              if [ ! -s sites/assets/assets.json ] || ! /home/frappe/frappe-bench/env/bin/python3 -c "import json,os,sys; d=json.load(open('sites/assets/assets.json')); req=('app.bundle.js','app.bundle.css','libs.bundle.js','desk.bundle.js','list.bundle.js','form.bundle.js','controls.bundle.js','report.bundle.js'); ok=isinstance(d,dict) and all(k in d for k in req) and all(isinstance(v,str) and v.startswith('/assets/') and os.path.exists('/home/frappe/frappe-bench/sites/'+v.lstrip('/')) for v in d.values()); sys.exit(0 if ok else 1)"; then
-                echo "ERROR: assets.json is missing/empty after recovery; failing configure job"
+              if ! /home/frappe/frappe-bench/env/bin/python3 -c "import json,os,sys; d=json.load(open('sites/assets/assets.json')); req=('app.bundle.js','app.bundle.css','libs.bundle.js','desk.bundle.js','list.bundle.js','form.bundle.js','controls.bundle.js','report.bundle.js'); ok=isinstance(d,dict) and all(k in d for k in req) and all(isinstance(v,str) and v.startswith('/assets/') and os.path.exists('/home/frappe/frappe-bench/sites/'+v.lstrip('/')) for v in d.values()); sys.exit(0 if ok else 1)"; then
+                echo "ERROR: assets.json missing required bundle keys after symlink; failing configure job"
                 exit 1
               fi
 
