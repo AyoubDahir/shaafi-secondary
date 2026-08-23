@@ -65,20 +65,17 @@ jobs:
     # First-bootstrap-only, same lifecycle prod's own git history already shows for
     # this job: enabled true to create the fresh empty site, then flip back to false.
     #
-    # RE-ENABLED 2026-08-23: the "serving traffic for 22+ days" claim above was never
-    # actually verified over HTTP — it turned out false. The site's MySQL database
-    # (db_name from site_config.json) and its DB user never existed at all (confirmed
-    # directly: `SHOW DATABASES` / `SELECT ... FROM mysql.user` on mariadb-galera-0
-    # show neither), despite the site directory + site_config.json existing on disk
-    # since 2026-07-23 — bench new-site must have written the site folder + config but
-    # never completed (or lost) the MySQL provisioning step, likely during one of the
-    # several Galera incidents documented elsewhere in this repo's history. No backups
-    # exist (private/backups/ is empty) and nothing currently depends on the specific
-    # db_name/db_password already in site_config.json, so forceCreate: true (below) to
-    # let bench new-site --force regenerate everything cleanly rather than hand-crafting
-    # the DB/user/schema to match the old (never-populated) values. Flip both this and
-    # forceCreate back to false once confirmed working, same lifecycle as before.
-    enabled: true
+    # RE-ENABLED-then-DISABLED 2026-08-23: the "serving traffic for 22+ days" claim
+    # above was never actually verified over HTTP — it turned out false. The site's
+    # MySQL database never existed at all (wrong MariaDB charset -- see
+    # apps/mariadb-galera.yaml -- silently failed every bench new-site attempt since
+    # 2026-07-23) and a separate Galera/MyISAM engine-mismatch bug (see
+    # job-create-site.yaml's __global_search InnoDB-conversion watcher) blocked it
+    # again after the charset was fixed. Both fixed same-session; forceCreate: true
+    # successfully recreated the site. Flipping enabled/forceCreate back to false now
+    # that it's confirmed working -- don't flip true again without a real reason, a
+    # forced re-run wipes and recreates the live site from scratch.
+    enabled: false
     backoffLimit: 5
     siteName: shaafi
     dbType: mariadb
@@ -87,7 +84,7 @@ jobs:
     # Accepted only because this repo is private. Rotate via `bench --site shaafi
     # set-admin-password` after first login if this needs to change.
     adminPassword: "YmIQHWkFYnJpSG38f4Gr"
-    forceCreate: true
+    forceCreate: false
     installApps:
       - erpnext
     defaultTheme: ""
@@ -130,10 +127,10 @@ jobs:
     # DISABLED 2026-08-23: this job has no ArgoCD hook/sync-wave ordering relative to
     # createSite, and its own internal retry loop (waiting for the DB to exist) blocks
     # the whole sync from ever reaching createSite -- which is what would actually
-    # create that DB. Re-enable once createSite (forceCreate, see above) has confirmed
-    # succeeded, so this can do its real job (idempotent password-sync) against a DB
-    # that actually exists.
-    enabled: false
+    # create that DB. RE-ENABLED 2026-08-23: createSite confirmed succeeded (real DB +
+    # apps installed), safe to run now -- idempotent password-sync against a DB that
+    # actually exists. Flip back to false once confirmed via job logs, same lifecycle.
+    enabled: true
     backoffLimit: 5
     resources: {}
   dropSite:
