@@ -198,7 +198,9 @@ spec:
                 bench --site "$SITE_NAME" sync-fixtures --app prime || echo "WARN: sync-fixtures returned non-zero"
 
                 echo "Seeding Home Page records..."
-                bench --site "$SITE_NAME" execute mma_design.install.seed_home_pages || echo "WARN: seed_home_pages returned non-zero"
+                # mma_design was renamed/replaced by rasiin_design (confirmed by user 2026-08-23) --
+                # the old module path no longer exists in the image and raised NameError every run.
+                bench --site "$SITE_NAME" execute rasiin_design.install.seed_home_pages || echo "WARN: seed_home_pages returned non-zero"
               else
                 echo "WARN: Site directory missing, skipping cache/migrate/seed"
               fi
