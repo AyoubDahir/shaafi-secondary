@@ -91,27 +91,82 @@ spec:
         imagePullPolicy: {{ .Values.image.pullPolicy }}
         command: ["bash", "-c"]
         args:
-          - >
-            bench new-site $(SITE_NAME)
-            --no-mariadb-socket
-            --db-type=$(DB_TYPE)
-            --db-host=$(DB_HOST)
-            --db-port=$(DB_PORT)
-            --admin-password=$(ADMIN_PASSWORD)
-            --mariadb-root-username=$(DB_ROOT_USER)
-            --mariadb-root-password=$(DB_ROOT_PASSWORD)
-        {{- if .Values.jobs.createSite.installApps }}
-          {{- range .Values.jobs.createSite.installApps }}
-            --install-app={{ . }}
-          {{- end }}
-        {{- end }}
-          {{- if .Values.jobs.createSite.forceCreate }}
-            --force
-          {{- end }}
-            {{- if .Values.jobs.createSite.defaultTheme }}
-            && bench --site $(SITE_NAME) set-config -g default_website_theme {{ .Values.jobs.createSite.defaultTheme | quote }}
+          - |
+            # Galera can't replicate a commit that spans both InnoDB and MyISAM tables
+            # ("Transactional commit not supported by involved engine(s)") -- but
+            # frappe/database/mariadb/database.py hard-codes __global_search as
+            # ENGINE=MyISAM (legacy FULLTEXT-on-InnoDB workaround, source code, not
+            # something this repo controls). Run bench new-site in the background and
+            # race a watcher that ALTERs __global_search to InnoDB the instant it's
+            # created, before any later delete/cleanup step can touch it in a mixed
+            # transaction. Confirmed 2026-08-23: without this, new-site gets to ~89%
+            # (framework + app installed) then fails + rolls back the whole DB on this
+            # exact error during a country-info cleanup step.
+            bench new-site $(SITE_NAME) \
+              --no-mariadb-socket \
+              --db-type=$(DB_TYPE) \
+              --db-host=$(DB_HOST) \
+              --db-port=$(DB_PORT) \
+              --admin-password=$(ADMIN_PASSWORD) \
+              --mariadb-root-username=$(DB_ROOT_USER) \
+              --mariadb-root-password=$(DB_ROOT_PASSWORD) \
+            {{- if .Values.jobs.createSite.installApps }}
+              {{- range .Values.jobs.createSite.installApps }}
+              --install-app={{ . }} \
+              {{- end }}
             {{- end }}
-            && echo -n $(SITE_NAME) > /home/frappe/frappe-bench/sites/currentsite.txt
+            {{- if .Values.jobs.createSite.forceCreate }}
+              --force \
+            {{- end }}
+              ; echo $? > /tmp/newsite.exitcode &
+            NEWSITE_PID=$!
+
+            python3 - <<'PYEOF' &
+            import pymysql, os, time
+            host = os.environ["DB_HOST"]
+            port = int(os.environ.get("DB_PORT", "3306"))
+            user = os.environ["DB_ROOT_USER"]
+            pw = os.environ["DB_ROOT_PASSWORD"]
+            converted = False
+            for _ in range(240):
+                try:
+                    conn = pymysql.connect(host=host, port=port, user=user, password=pw)
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "SELECT table_schema FROM information_schema.tables "
+                            "WHERE table_name='__global_search' LIMIT 1"
+                        )
+                        row = cur.fetchone()
+                        if row:
+                            db = row[0]
+                            cur.execute("ALTER TABLE `%s`.__global_search ENGINE=InnoDB" % db)
+                            conn.commit()
+                            print("Converted __global_search in %s to InnoDB" % db)
+                            converted = True
+                    conn.close()
+                    if converted:
+                        break
+                except Exception:
+                    pass
+                time.sleep(1)
+            if not converted:
+                print("WARNING: __global_search never appeared to convert to InnoDB")
+            PYEOF
+            WATCHER_PID=$!
+
+            wait $NEWSITE_PID
+            kill $WATCHER_PID 2>/dev/null || true
+            NEWSITE_EXIT=$(cat /tmp/newsite.exitcode 2>/dev/null || echo 1)
+
+            if [ "$NEWSITE_EXIT" != "0" ]; then
+              echo "bench new-site failed with exit $NEWSITE_EXIT"
+              exit $NEWSITE_EXIT
+            fi
+
+            {{- if .Values.jobs.createSite.defaultTheme }}
+            bench --site $(SITE_NAME) set-config -g default_website_theme {{ .Values.jobs.createSite.defaultTheme | quote }}
+            {{- end }}
+            echo -n $(SITE_NAME) > /home/frappe/frappe-bench/sites/currentsite.txt
         env:
           - name: "SITE_NAME"
             value: "{{ .Values.jobs.createSite.siteName }}"
