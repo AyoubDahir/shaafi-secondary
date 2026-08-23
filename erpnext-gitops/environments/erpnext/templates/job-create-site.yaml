@@ -94,14 +94,22 @@ spec:
           - |
             # Galera can't replicate a commit that spans both InnoDB and MyISAM tables
             # ("Transactional commit not supported by involved engine(s)") -- but
-            # frappe/database/mariadb/database.py hard-codes __global_search as
-            # ENGINE=MyISAM (legacy FULLTEXT-on-InnoDB workaround, source code, not
-            # something this repo controls). Run bench new-site in the background and
-            # race a watcher that ALTERs __global_search to InnoDB the instant it's
-            # created, before any later delete/cleanup step can touch it in a mixed
-            # transaction. Confirmed 2026-08-23: without this, new-site gets to ~89%
-            # (framework + app installed) then fails + rolls back the whole DB on this
-            # exact error during a country-info cleanup step.
+            # Frappe core hard-codes 3 tables as ENGINE=MyISAM (source code / doctype
+            # JSON, not something this repo controls): __global_search
+            # (frappe/database/mariadb/database.py, legacy FULLTEXT-on-InnoDB
+            # workaround), and Error Log + Data Import Log (their own doctype.json
+            # "engine": "MyISAM" -- a deliberate perf choice for high-volume logging
+            # tables). Confirmed 2026-08-23: __global_search breaks bench new-site
+            # itself (~89% through, fails + rolls back the whole DB on a country-info
+            # cleanup step); Error Log breaks LATER, more insidiously -- any unrelated
+            # error during normal site operation tries to log itself via
+            # frappe.log_error() -> insert into `tabError Log`, which ALSO hits this
+            # same 1180 error, so what should be a harmless logged warning instead
+            # surfaces as a full Server Error to the user. Data Import Log has the same
+            # risk, just less frequently hit. __global_search and Data Import Log
+            # exist from the start of a fresh site; Error Log is created lazily on the
+            # very first error, so this watcher polls for and converts all three
+            # *repeatedly* for the whole run, not just once.
             bench new-site $(SITE_NAME) \
               --no-mariadb-socket \
               --db-type=$(DB_TYPE) \
@@ -127,30 +135,38 @@ spec:
             port = int(os.environ.get("DB_PORT", "3306"))
             user = os.environ["DB_ROOT_USER"]
             pw = os.environ["DB_ROOT_PASSWORD"]
-            converted = False
-            for _ in range(240):
+            watch_tables = ["__global_search", "tabError Log", "tabData Import Log"]
+            converted = set()
+            for _ in range(600):
                 try:
                     conn = pymysql.connect(host=host, port=port, user=user, password=pw)
                     with conn.cursor() as cur:
-                        cur.execute(
-                            "SELECT table_schema FROM information_schema.tables "
-                            "WHERE table_name='__global_search' LIMIT 1"
-                        )
-                        row = cur.fetchone()
-                        if row:
-                            db = row[0]
-                            cur.execute("ALTER TABLE `%s`.__global_search ENGINE=InnoDB" % db)
-                            conn.commit()
-                            print("Converted __global_search in %s to InnoDB" % db)
-                            converted = True
+                        for tbl in watch_tables:
+                            if tbl in converted:
+                                continue
+                            cur.execute(
+                                "SELECT table_schema FROM information_schema.tables "
+                                "WHERE table_name=%s LIMIT 1",
+                                (tbl,),
+                            )
+                            row = cur.fetchone()
+                            if row:
+                                db = row[0]
+                                cur.execute(
+                                    "ALTER TABLE `%s`.`%s` ENGINE=InnoDB" % (db, tbl)
+                                )
+                                conn.commit()
+                                print("Converted %s in %s to InnoDB" % (tbl, db))
+                                converted.add(tbl)
                     conn.close()
-                    if converted:
-                        break
                 except Exception:
                     pass
+                if len(converted) == len(watch_tables):
+                    break
                 time.sleep(1)
-            if not converted:
-                print("WARNING: __global_search never appeared to convert to InnoDB")
+            missing = set(watch_tables) - converted
+            if missing:
+                print("WARNING: never saw these tables to convert: %s" % ", ".join(missing))
             PYEOF
             WATCHER_PID=$!
 

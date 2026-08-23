@@ -59,6 +59,52 @@ spec:
             - |
               set -euo pipefail
 
+              # Galera can't replicate a commit spanning InnoDB + MyISAM tables. Frappe
+              # core hard-codes __global_search / Error Log / Data Import Log as
+              # MyISAM (source code + doctype.json, not something this repo controls).
+              # __global_search/Data Import Log usually exist from create-site already;
+              # Error Log is created lazily on the very first error -- which can easily
+              # happen mid-way through this job's app installs, and Frappe trying to
+              # log that error via `tabError Log` would itself hit the same 1180 error,
+              # turning a harmless warning into a hard failure. Poll for and convert
+              # all three, for this job's whole runtime, in the background.
+              (
+                python3 - <<'PYEOF'
+              import pymysql, os, time
+              host = os.environ["DB_HOST"]
+              port = int(os.environ.get("DB_PORT", "3306"))
+              user = os.environ.get("DB_ROOT_USER", "root")
+              pw = os.environ.get("DB_ROOT_PASSWORD", "")
+              watch_tables = ["__global_search", "tabError Log", "tabData Import Log"]
+              converted = set()
+              for _ in range(1800):
+                  try:
+                      conn = pymysql.connect(host=host, port=port, user=user, password=pw)
+                      with conn.cursor() as cur:
+                          for tbl in watch_tables:
+                              if tbl in converted:
+                                  continue
+                              cur.execute(
+                                  "SELECT table_schema FROM information_schema.tables "
+                                  "WHERE table_name=%s LIMIT 1",
+                                  (tbl,),
+                              )
+                              row = cur.fetchone()
+                              if row:
+                                  db = row[0]
+                                  cur.execute(
+                                      "ALTER TABLE `%s`.`%s` ENGINE=InnoDB" % (db, tbl)
+                                  )
+                                  conn.commit()
+                                  print("Converted %s in %s to InnoDB" % (tbl, db))
+                                  converted.add(tbl)
+                      conn.close()
+                  except Exception:
+                      pass
+                  time.sleep(1)
+              PYEOF
+              ) &
+
               echo "========================================"
               echo "ERPNext configure job starting..."
               echo "========================================"
@@ -274,6 +320,24 @@ spec:
               {{- end }}
             - name: DB_PORT
               value: {{ .Values.mariadb.primary.service.ports.mysql | quote }}
+            - name: "DB_ROOT_USER"
+              {{- if .Values.dbRootUser }}
+              value: "{{ .Values.dbRootUser }}"
+              {{- else if .Values.mariadb.enabled }}
+              value: "root"
+              {{- end }}
+            - name: "DB_ROOT_PASSWORD"
+              {{- if .Values.dbRootPassword }}
+              valueFrom:
+                secretKeyRef:
+                  key: db-root-password
+                  name: {{ .Release.Name }}
+              {{- else if .Values.mariadb.enabled }}
+              valueFrom:
+                secretKeyRef:
+                  key: mariadb-root-password
+                  name: {{ .Release.Name }}-mariadb
+              {{- end }}
             - name: REDIS_CACHE
               {{- if index .Values "redis-cache" "enabled" }}
               value: redis://{{ .Release.Name }}-redis-cache-master:{{ index .Values "redis-cache" "master" "containerPorts" "redis" }}
