@@ -10,6 +10,9 @@
 #   plan to not stand up a second CI pipeline for infra-only images).
 # - --address values CONFIRMED 2026-08-23 correct against the live mariadb-galera-0/1
 #   pods and the mariadb-galera-headless Service.
+# - image is private by default on GHCR (unlike shaafi-custom) — needs the same
+#   ghcr-pull-secret already used by the erpnext chart (confirmed 2026-08-23: without
+#   it, kubelet gets a 401 trying an anonymous pull).
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -25,6 +28,8 @@ spec:
       labels:
         app: garbd
     spec:
+      imagePullSecrets:
+        - name: ghcr-pull-secret
       nodeSelector:
         workload-tier: quorum
       tolerations:
