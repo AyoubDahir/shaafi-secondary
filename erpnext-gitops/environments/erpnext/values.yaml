@@ -410,17 +410,28 @@ keda:
 # `<release>-headless` exist). Fixed to the plain release name below. Since this one
 # combined service is how sentinel-mode clients are meant to connect in the first
 # place (Sentinel manages which pod behind it answers as master), this should be
-# resilient across failover — but that's still worth a live game-day check (kill the
-# current master pod, confirm ERPNext keeps working) before trusting it in anger.
+# CORRECTED 2026-08-23: the "resilient across failover" assumption above was wrong —
+# verified live. The plain <release> Service has no role-based selector (bitnami's
+# sentinel-mode chart doesn't label pods by role), so it round-robins across BOTH the
+# master and the replica. Frappe/RQ hold long-lived connections and have no Sentinel
+# awareness, so ~half of new connections landed on the read-only replica and threw
+# `redis.exceptions.ReadOnlyError` — this was the root cause of a 30-day-standing
+# outage (every worker + socketio pod crash-looping, site 500ing). Pointed directly at
+# each group's current master's stable per-pod headless DNS instead. Tradeoff (known,
+# accepted for now): this does NOT survive an actual failover automatically — if this
+# specific pod ever goes down and Sentinel promotes the other one, these need to be
+# manually repointed. A proper fix (a small Sentinel-aware proxy/reconciler keeping a
+# dedicated Service pointed at whichever pod is actually master) was considered and
+# deferred as a separate, larger piece of work.
 redis-cache:
   enabled: false
-  host: "redis://redis-cache-ha:6379"
+  host: "redis://redis-cache-ha-node-1.redis-cache-ha-headless.erpnext.svc.cluster.local:6379"
 redis-queue:
   enabled: false
-  host: "redis://redis-queue-ha:6379"
+  host: "redis://redis-queue-ha-node-1.redis-queue-ha-headless.erpnext.svc.cluster.local:6379"
 redis-socketio:
   enabled: false
-  host: "redis://redis-socketio-ha:6379"
+  host: "redis://redis-socketio-ha-node-1.redis-socketio-ha-headless.erpnext.svc.cluster.local:6379"
 postgresql:
   enabled: false
 # mariadb.enabled stays false — Galera is deployed independently
