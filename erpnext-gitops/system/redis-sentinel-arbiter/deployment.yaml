@@ -1,7 +1,9 @@
 # 3 plain `redis-sentinel` processes in one pod — the 3rd, data-less vote for each of
 # the 3 redis roles (see configmap.yaml for the caveats to verify after the redis-*-ha
-# Applications' first sync). No PersistentVolume, no anti-affinity requirement: it
-# doesn't compete with the 2 real data-bearing replicas for "one per node".
+# Applications' first sync). No PersistentVolume. Pinned to the VPS quorum node
+# (shaafi-vpc, labeled+tainted workload-tier=quorum once it joined the cluster
+# 2026-08-23) via nodeSelector/tolerations below, matching "Sentinel on all 3 nodes"
+# in the locked-in architecture.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -17,6 +19,13 @@ spec:
       labels:
         app: redis-sentinel-arbiter
     spec:
+      nodeSelector:
+        workload-tier: quorum
+      tolerations:
+        - key: workload-tier
+          operator: Equal
+          value: quorum
+          effect: NoSchedule
       containers:
         - name: sentinel-cache
           image: docker.io/bitnamilegacy/redis:7.0.7-debian-11-r0

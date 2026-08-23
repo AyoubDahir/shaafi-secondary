@@ -1,16 +1,15 @@
-# The 3rd, data-less Galera vote — no PersistentVolume, floats to whichever node k8s
-# schedules it on (no anti-affinity requirement since it doesn't compete with the 2
-# real data nodes for a "one per node" guarantee).
+# The 3rd, data-less Galera vote — no PersistentVolume. Pinned to the VPS quorum node
+# (shaafi-vpc, labeled+tainted workload-tier=quorum once it joined the cluster
+# 2026-08-23) via nodeSelector/tolerations below, per the locked-in architecture
+# ("never a full MariaDB node on the VPS, garbd only").
 #
 # VERIFY BEFORE FIRST SYNC:
 # - image below assumes it was built from ./Dockerfile in this same directory and
 #   pushed to ghcr.io/ayoubdahir/shaafi-garbd:1.0 — build+push is a manual step,
 #   not automated by any workflow in this repo (mirrors the decision in §1 of the
 #   plan to not stand up a second CI pipeline for infra-only images).
-# - --address values: bitnami's mariadb-galera chart creates a headless Service
-#   for direct pod DNS; confirm the actual per-pod hostnames after the
-#   mariadb-galera Application's first sync (kubectl get pods,svc -n erpnext) and
-#   correct the two addresses below if they differ from this guess.
+# - --address values CONFIRMED 2026-08-23 correct against the live mariadb-galera-0/1
+#   pods and the mariadb-galera-headless Service.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -26,6 +25,13 @@ spec:
       labels:
         app: garbd
     spec:
+      nodeSelector:
+        workload-tier: quorum
+      tolerations:
+        - key: workload-tier
+          operator: Equal
+          value: quorum
+          effect: NoSchedule
       containers:
         - name: garbd
           image: ghcr.io/ayoubdahir/shaafi-garbd:1.0
