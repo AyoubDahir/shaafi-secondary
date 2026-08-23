@@ -127,11 +127,13 @@ jobs:
     nodeSelector: {}
     tolerations: []
   grantSiteDbUser:
-    # Temporarily enabled 2026-08-15 to run the now-fixed ALTER USER password-sync
-    # (see job-grant-site-db-user.yaml) and clear the "_4d3994f22157e00c" access-denied
-    # error. Flip back to false once confirmed via job logs -- same one-shot lifecycle
-    # as createSite/installApp/volumePermissions above.
-    enabled: true
+    # DISABLED 2026-08-23: this job has no ArgoCD hook/sync-wave ordering relative to
+    # createSite, and its own internal retry loop (waiting for the DB to exist) blocks
+    # the whole sync from ever reaching createSite -- which is what would actually
+    # create that DB. Re-enable once createSite (forceCreate, see above) has confirmed
+    # succeeded, so this can do its real job (idempotent password-sync) against a DB
+    # that actually exists.
+    enabled: false
     backoffLimit: 5
     resources: {}
   dropSite:
