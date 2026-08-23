@@ -159,7 +159,16 @@ spec:
               if bench --site "{{ $.Values.jobs.installApp.siteName }}" list-apps | grep -qx "{{ . }}"; then
                 echo "  -> {{ . }} already installed, skipping"
               else
-                if bench --site "{{ $.Values.jobs.installApp.siteName }}" install-app "{{ . }}" --force; then
+                # NO --force here (confirmed 2026-08-23): --force makes bench re-run
+                # after_install hooks even for already-installed dependencies -- e.g.
+                # installing "healthcare" (which depends on erpnext) re-ran erpnext's
+                # own after_install, which unconditionally re-creates the "Analytics"
+                # Role and fails with DuplicateEntryError since it already exists,
+                # killing the whole install. Without --force, bench correctly skips
+                # already-satisfied dependencies. The "already installed, skipping"
+                # check above already covers the case --force was presumably meant to
+                # handle (re-running install for an app already in the list).
+                if bench --site "{{ $.Values.jobs.installApp.siteName }}" install-app "{{ . }}"; then
                   echo "  -> {{ . }} installed successfully"
                 else
                   if bench --site "{{ $.Values.jobs.installApp.siteName }}" list-apps | grep -qx "{{ . }}"; then
