@@ -64,10 +64,21 @@ jobs:
   createSite:
     # First-bootstrap-only, same lifecycle prod's own git history already shows for
     # this job: enabled true to create the fresh empty site, then flip back to false.
-    # Site has existed and been serving traffic for 22+ days — flipped off 2026-08-15
-    # after this job was found silently retrying (backoffLimit 5) and failing every
-    # sync with "Site shaafi already exists", dragging Application health to Degraded.
-    enabled: false
+    #
+    # RE-ENABLED 2026-08-23: the "serving traffic for 22+ days" claim above was never
+    # actually verified over HTTP — it turned out false. The site's MySQL database
+    # (db_name from site_config.json) and its DB user never existed at all (confirmed
+    # directly: `SHOW DATABASES` / `SELECT ... FROM mysql.user` on mariadb-galera-0
+    # show neither), despite the site directory + site_config.json existing on disk
+    # since 2026-07-23 — bench new-site must have written the site folder + config but
+    # never completed (or lost) the MySQL provisioning step, likely during one of the
+    # several Galera incidents documented elsewhere in this repo's history. No backups
+    # exist (private/backups/ is empty) and nothing currently depends on the specific
+    # db_name/db_password already in site_config.json, so forceCreate: true (below) to
+    # let bench new-site --force regenerate everything cleanly rather than hand-crafting
+    # the DB/user/schema to match the old (never-populated) values. Flip both this and
+    # forceCreate back to false once confirmed working, same lifecycle as before.
+    enabled: true
     backoffLimit: 5
     siteName: shaafi
     dbType: mariadb
@@ -76,7 +87,7 @@ jobs:
     # Accepted only because this repo is private. Rotate via `bench --site shaafi
     # set-admin-password` after first login if this needs to change.
     adminPassword: "YmIQHWkFYnJpSG38f4Gr"
-    forceCreate: false
+    forceCreate: true
     installApps:
       - erpnext
     defaultTheme: ""
