@@ -1,0 +1,57 @@
+# Scoped tightly: only allowed to exec into the 6 known redis-*-ha-node-{0,1} pods
+# (to run `redis-cli sentinel get-master-addr-by-name`) and get/patch the 3 known
+# redis-*-ha-master Services (to repoint spec.externalName). No wider pod/exec or
+# service access.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: redis-master-tracker
+  namespace: erpnext
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: redis-master-tracker
+  namespace: erpnext
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get"]
+    resourceNames:
+      - redis-cache-ha-node-0
+      - redis-cache-ha-node-1
+      - redis-queue-ha-node-0
+      - redis-queue-ha-node-1
+      - redis-socketio-ha-node-0
+      - redis-socketio-ha-node-1
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+    resourceNames:
+      - redis-cache-ha-node-0
+      - redis-cache-ha-node-1
+      - redis-queue-ha-node-0
+      - redis-queue-ha-node-1
+      - redis-socketio-ha-node-0
+      - redis-socketio-ha-node-1
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "patch"]
+    resourceNames:
+      - redis-cache-ha-master
+      - redis-queue-ha-master
+      - redis-socketio-ha-master
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: redis-master-tracker
+  namespace: erpnext
+subjects:
+  - kind: ServiceAccount
+    name: redis-master-tracker
+    namespace: erpnext
+roleRef:
+  kind: Role
+  name: redis-master-tracker
+  apiGroup: rbac.authorization.k8s.io

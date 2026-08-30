@@ -1,0 +1,33 @@
+# Permanent fix for the recurring "redis-*-ha values.yaml points at a hardcoded
+# pod DNS, breaks on every real Sentinel failover" problem (hit for real on
+# 2026-08-29 and again 2026-08-30 -- see incident memory for both). The Bitnami
+# redis chart's sentinel mode has NO role-aware Service (confirmed live: pods
+# carry no dynamic role label, the plain `<release>` Service round-robins across
+# master+replica). This app deploys a tiny reconciler that polls each group's
+# Sentinel (`SENTINEL get-master-addr-by-name mymaster`, already returns a
+# hostname not an IP thanks to `sentinel resolve-hostnames yes` in
+# system/redis-sentinel-arbiter/configmap.yaml) and repoints an ExternalName
+# Service at whatever pod is currently master. environments/erpnext/values.yaml's
+# redis-cache/queue/socketio hosts now point at these stable
+# `redis-<role>-ha-master` Service names instead of a specific node, so a future
+# failover no longer requires a manual GitOps commit.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: redis-master-tracker
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/AyoubDahir/shaafi-secondary.git
+    targetRevision: HEAD
+    path: erpnext-gitops/system/redis-master-tracker
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: erpnext
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

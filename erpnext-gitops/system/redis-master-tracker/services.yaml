@@ -1,0 +1,33 @@
+# Stable, role-aware entrypoints: environments/erpnext/values.yaml points
+# redis-cache/queue/socketio at these instead of a specific node's DNS. The
+# tracker Deployment (deployment.yaml) keeps spec.externalName pointed at
+# whichever pod each group's Sentinel currently reports as master. Initial
+# values below are today's real masters (2026-08-30) so the site keeps working
+# even before the tracker's first reconcile loop runs; the tracker is expected
+# to take over ownership of this field from here on.
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-cache-ha-master
+  namespace: erpnext
+spec:
+  type: ExternalName
+  externalName: redis-cache-ha-node-1.redis-cache-ha-headless.erpnext.svc.cluster.local
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-queue-ha-master
+  namespace: erpnext
+spec:
+  type: ExternalName
+  externalName: redis-queue-ha-node-1.redis-queue-ha-headless.erpnext.svc.cluster.local
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-socketio-ha-master
+  namespace: erpnext
+spec:
+  type: ExternalName
+  externalName: redis-socketio-ha-node-1.redis-socketio-ha-headless.erpnext.svc.cluster.local

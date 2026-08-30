@@ -1,0 +1,59 @@
+# Reconcile loop: every 15s, ask each redis-*-ha group's Sentinel (via `kubectl
+# exec` into whichever of its two node pods answers) who is currently master,
+# and patch the matching redis-*-ha-master ExternalName Service if it changed.
+# `sentinel get-master-addr-by-name` returns a hostname here (not an IP) because
+# system/redis-sentinel-arbiter/configmap.yaml sets `sentinel resolve-hostnames
+# yes` on the arbiter, and the bitnami chart's own in-pod sentinels inherit the
+# same announced hostname behavior -- confirmed live 2026-08-30.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: redis-master-tracker-script
+  namespace: erpnext
+data:
+  tracker.sh: |
+    #!/bin/sh
+    set -u
+    NS=erpnext
+    ROLES="cache queue socketio"
+
+    log() {
+      echo "$(date -u +%FT%TZ) $*"
+    }
+
+    reconcile_once() {
+      for role in $ROLES; do
+        master=""
+        for idx in 0 1; do
+          pod="redis-${role}-ha-node-${idx}"
+          host=$(kubectl exec -n "$NS" "$pod" -c sentinel -- \
+            redis-cli -p 26379 sentinel get-master-addr-by-name mymaster 2>/dev/null \
+            | sed -n '1p')
+          if [ -n "${host:-}" ]; then
+            master="$host"
+            break
+          fi
+        done
+
+        svc="redis-${role}-ha-master"
+        if [ -z "$master" ]; then
+          log "${role}: WARNING could not reach sentinel on either node this cycle, leaving ${svc} unchanged"
+          continue
+        fi
+
+        current=$(kubectl get svc -n "$NS" "$svc" -o jsonpath='{.spec.externalName}' 2>/dev/null)
+        if [ "$current" != "$master" ]; then
+          if kubectl patch svc -n "$NS" "$svc" --type merge -p "{\"spec\":{\"externalName\":\"${master}\"}}" >/dev/null 2>&1; then
+            log "${role}: master changed '${current}' -> '${master}', repointed ${svc}"
+          else
+            log "${role}: ERROR failed to patch ${svc} to '${master}'"
+          fi
+        fi
+      done
+    }
+
+    log "redis-master-tracker starting, polling every 15s"
+    while true; do
+      reconcile_once
+      sleep 15
+    done
