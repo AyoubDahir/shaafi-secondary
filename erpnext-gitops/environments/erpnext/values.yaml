@@ -417,36 +417,31 @@ keda:
 # doesn't exist — bitnami's redis chart docs state sentinel.enabled=true "disable[s]
 # the master and replicas services and create[s] a single Redis service" instead
 # (confirmed via `kubectl get svc -n erpnext`: only `<release>` and
-# `<release>-headless` exist). Fixed to the plain release name below. Since this one
-# combined service is how sentinel-mode clients are meant to connect in the first
-# place (Sentinel manages which pod behind it answers as master), this should be
-# CORRECTED 2026-08-23: the "resilient across failover" assumption above was wrong —
-# verified live. The plain <release> Service has no role-based selector (bitnami's
-# sentinel-mode chart doesn't label pods by role), so it round-robins across BOTH the
-# master and the replica. Frappe/RQ hold long-lived connections and have no Sentinel
-# awareness, so ~half of new connections landed on the read-only replica and threw
-# `redis.exceptions.ReadOnlyError` — this was the root cause of a 30-day-standing
-# outage (every worker + socketio pod crash-looping, site 500ing). Pointed directly at
-# each group's current master's stable per-pod headless DNS instead. Tradeoff (known,
-# accepted for now): this does NOT survive an actual failover automatically — if this
-# specific pod ever goes down and Sentinel promotes the other one, these need to be
-# manually repointed. A proper fix (a small Sentinel-aware proxy/reconciler keeping a
-# dedicated Service pointed at whichever pod is actually master) was considered and
-# deferred as a separate, larger piece of work.
+# `<release>-headless` exist). The plain <release> Service has no role-based selector
+# (bitnami's sentinel-mode chart doesn't label pods by role) so it round-robins across
+# BOTH the master and the replica — Frappe/RQ hold long-lived connections with no
+# Sentinel awareness, so ~half of new connections landed on the read-only replica and
+# threw `redis.exceptions.ReadOnlyError` (root cause of a 30-day outage, 2026-08-23).
+# A hardcoded per-pod headless DNS was used as a stopgap after that, but doesn't
+# survive a real failover — hit twice (2026-08-29, 2026-08-30), each requiring a
+# manual GitOps repoint while every worker pod crash-looped in the meantime.
+#
+# PERMANENT FIX 2026-08-30: apps/redis-master-tracker.yaml deploys a small
+# reconciler (system/redis-master-tracker/) that polls each group's Sentinel every
+# 15s and keeps a dedicated `redis-<role>-ha-master` ExternalName Service pointed at
+# whichever pod is actually master. Verified live: deliberately mispointed
+# redis-queue-ha-master at the replica and confirmed the tracker corrected it back
+# within one poll cycle. All 3 roles now point at these tracker-managed services
+# instead of a specific node — a future failover should no longer need a manual fix.
 redis-cache:
   enabled: false
-  host: "redis://redis-cache-ha-node-1.redis-cache-ha-headless.erpnext.svc.cluster.local:6379"
-# REPOINTED 2026-08-30: node-1 failed back over to master again (node-0 demoted to
-# replica), confirmed via `redis-cli info replication`. This is the second recurrence
-# of the exact tradeoff flagged above -- see apps/redis-master-tracker.yaml for the
-# permanent fix (a Sentinel-aware reconciler + stable master Service) replacing this
-# hardcoded pod DNS.
+  host: "redis://redis-cache-ha-master.erpnext.svc.cluster.local:6379"
 redis-queue:
   enabled: false
-  host: "redis://redis-queue-ha-node-1.redis-queue-ha-headless.erpnext.svc.cluster.local:6379"
+  host: "redis://redis-queue-ha-master.erpnext.svc.cluster.local:6379"
 redis-socketio:
   enabled: false
-  host: "redis://redis-socketio-ha-node-1.redis-socketio-ha-headless.erpnext.svc.cluster.local:6379"
+  host: "redis://redis-socketio-ha-master.erpnext.svc.cluster.local:6379"
 postgresql:
   enabled: false
 # mariadb.enabled stays false — Galera is deployed independently
