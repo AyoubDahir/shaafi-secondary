@@ -436,14 +436,14 @@ keda:
 redis-cache:
   enabled: false
   host: "redis://redis-cache-ha-node-1.redis-cache-ha-headless.erpnext.svc.cluster.local:6379"
-# REPOINTED 2026-08-29: node-1 was demoted to replica by an actual Sentinel failover
-# (the tradeoff flagged above materialized) -- node-0 is now master, confirmed via
-# `redis-cli info replication` on both pods. Every worker pod was crash-looping with
-# ReadOnlyError as a result. Repointed to the current master; still carries the same
-# does-not-survive-another-failover tradeoff described above.
+# REPOINTED 2026-08-30: node-1 failed back over to master again (node-0 demoted to
+# replica), confirmed via `redis-cli info replication`. This is the second recurrence
+# of the exact tradeoff flagged above -- see apps/redis-master-tracker.yaml for the
+# permanent fix (a Sentinel-aware reconciler + stable master Service) replacing this
+# hardcoded pod DNS.
 redis-queue:
   enabled: false
-  host: "redis://redis-queue-ha-node-0.redis-queue-ha-headless.erpnext.svc.cluster.local:6379"
+  host: "redis://redis-queue-ha-node-1.redis-queue-ha-headless.erpnext.svc.cluster.local:6379"
 redis-socketio:
   enabled: false
   host: "redis://redis-socketio-ha-node-1.redis-socketio-ha-headless.erpnext.svc.cluster.local:6379"
