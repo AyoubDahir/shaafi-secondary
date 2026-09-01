@@ -156,7 +156,13 @@ spec:
 
           [mariadb]
           plugin_load_add=auth_pam
-        replicaCount: 2
+        # TEMPORARY, 2026-09-01: scaled to 0 to cleanly recreate the cluster from
+        # scratch on the downgraded 10.6.20 image (see incident memory -- mixing
+        # 12.0.2 and 10.6.20 live crashed the Galera applier thread; MariaDB doesn't
+        # support opening 12.0.2-created data with an older major version). Nothing
+        # in shaafi-secondary is in production use yet, so a clean wipe is safe.
+        # Scale back to 2 once data-mariadb-galera-0/1 PVCs are deleted.
+        replicaCount: 0
         podAntiAffinityPreset: hard
         existingSecret: mariadb-galera-secret
         galera:
