@@ -50,7 +50,14 @@ spec:
         image:
           registry: docker.io
           repository: bitnamilegacy/mariadb-galera
-          tag: 12.0.2-debian-12-r0
+          # PINNED 2026-09-01: downgraded from 12.0.2 to match the on-prem primary's
+          # MariaDB 10.6.22 branch ahead of setting up binlog-position replication
+          # from it (see project_onprem_primary_migration memory) -- cross-major
+          # replication (10.6 -> 12.0) isn't a safe assumption, same-branch is.
+          # bitnamilegacy/mariadb-galera has no exact 10.6.22 tag; 10.6.20 is the
+          # highest 10.6.x published there (confirmed via Docker Hub API) -- same
+          # minor branch, binlog format/GTID handling unaffected by the 2-patch gap.
+          tag: 10.6.20-debian-12-r3
         # ADDED 2026-08-23: the chart's default mariadbConfiguration sets legacy
         # utf8/utf8_unicode_ci (utf8mb3) — confirmed via a failed `bench new-site`:
         # "Database settings do not match expected values" (Frappe requires utf8mb4).
