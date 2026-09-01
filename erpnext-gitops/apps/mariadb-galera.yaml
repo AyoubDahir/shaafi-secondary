@@ -154,24 +154,11 @@ spec:
         existingSecret: mariadb-galera-secret
         galera:
           name: shaafi-secondary-galera
-          # TEMPORARY, 2026-09-01: cluster lost quorum (both nodes down together,
-          # likely from the shaaficontrol1 network incident during on-prem VPN setup
-          # the day before) and mariadb-galera-0 refused to self-bootstrap
-          # (safe_to_bootstrap: 0 in grastate.dat -- Galera's split-brain safety
-          # brake). mariadb-galera-1 never existed as a pod (StatefulSet OrderedReady
-          # never got past ordinal 0), so -0 is the only copy of the data and there's
-          # no ambiguity about which node to trust. Forces bootstrap from node 0 via
-          # the chart's official mechanism (MARIADB_GALERA_CLUSTER_BOOTSTRAP /
-          # MARIADB_GALERA_FORCE_SAFETOBOOTSTRAP env vars -- see
-          # system/mariadb-galera-chart/templates/statefulset.yaml). MUST be reverted
-          # (set forceBootstrap/forceSafeToBootstrap back to false, or delete this
-          # block) in a follow-up commit once the cluster is confirmed healthy --
-          # leaving this on defeats Galera's split-brain protection for any future
-          # incident.
-          bootstrap:
-            forceBootstrap: true
-            bootstrapFromNode: 0
-            forceSafeToBootstrap: true
+          # forceBootstrap was set true here on 2026-09-01 to recover from a quorum
+          # loss (see incident memory); reverted now that both nodes confirmed
+          # Running+Synced. Leaving it on would risk a future split-brain (a node
+          # recreated later would force-bootstrap a fresh cluster view instead of
+          # rejoining the live one).
         persistence:
           enabled: true
           storageClass: longhorn-nvme
