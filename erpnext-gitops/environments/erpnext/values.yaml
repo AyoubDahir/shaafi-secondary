@@ -4,7 +4,11 @@ image:
   # Pinned to a known-good production tag — this repo has no build pipeline of its
   # own (see README/git history: erpnext-build + .github were dropped on purpose,
   # reusing the same image family the production repo already builds and publishes).
-  tag: 14a94ac9544d6f8d980443076edeed5ded3d2c0a
+  # 2026-09-03: rebuilt from apps.json pointed at real production app commits
+  # (Ayuubi/* mirrors of the Rasiintech source repos) instead of juuja-ali's
+  # stale/unpinned ones -- see shaafi commit e9d50dbd. Excludes
+  # hospital_queue_display (source repo access not yet available).
+  tag: e9d50dbd654519cced17d31eb300160efe0a0cf8
   pullPolicy: Always
 imagePullSecrets:
   - name: ghcr-pull-secret
