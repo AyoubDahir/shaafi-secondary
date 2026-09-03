@@ -79,7 +79,14 @@ jobs:
     # successfully recreated the site. Flipping enabled/forceCreate back to false now
     # that it's confirmed working -- don't flip true again without a real reason, a
     # forced re-run wipes and recreates the live site from scratch.
-    enabled: false
+    #
+    # RE-ENABLED 2026-09-03: mariadb-galera PVCs were wiped and recreated on 10.6.20
+    # (see incident_shaafi_secondary_2026-09-01_galera_quorum memory) -- DB is
+    # genuinely empty, but the sites/shaafi directory on the separate worker PVC
+    # was untouched, so bench sees an existing site dir with no matching DB.
+    # forceCreate:true is needed to make bench new-site --force proceed anyway.
+    # Flip both back to false once confirmed successful.
+    enabled: true
     backoffLimit: 5
     siteName: shaafi
     dbType: mariadb
@@ -88,7 +95,7 @@ jobs:
     # Accepted only because this repo is private. Rotate via `bench --site shaafi
     # set-admin-password` after first login if this needs to change.
     adminPassword: "YmIQHWkFYnJpSG38f4Gr"
-    forceCreate: false
+    forceCreate: true
     installApps:
       - erpnext
     defaultTheme: ""
@@ -113,6 +120,7 @@ jobs:
       - rasiin_design
       - shaafi_mobile_app
       - dfp_external_storage
+      - rasiin_insights
     defaultTheme: ""
     backoffLimit: 2
     ttlSecondsAfterFinished: 300
