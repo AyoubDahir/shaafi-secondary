@@ -136,13 +136,13 @@ jobs:
     nodeSelector: {}
     tolerations: []
   grantSiteDbUser:
-    # DISABLED 2026-08-23: this job has no ArgoCD hook/sync-wave ordering relative to
-    # createSite, and its own internal retry loop (waiting for the DB to exist) blocks
-    # the whole sync from ever reaching createSite -- which is what would actually
-    # create that DB. RE-ENABLED 2026-08-23: createSite confirmed succeeded (real DB +
-    # apps installed), safe to run now -- idempotent password-sync against a DB that
-    # actually exists. Flip back to false once confirmed via job logs, same lifecycle.
-    enabled: true
+    # DISABLED again 2026-09-03: same recurring problem as 2026-08-23 -- this job has
+    # no ArgoCD hook/sync-wave ordering relative to createSite, and its own internal
+    # retry loop (waiting for the DB to exist) was blocking the whole sync operation
+    # from ever completing/reaching createSite, since ArgoCD won't start applying a
+    # newer commit while a prior sync operation is still "Running" and waiting on
+    # this Job's health. Re-enable once createSite is confirmed to have succeeded.
+    enabled: false
     backoffLimit: 5
     resources: {}
   dropSite:
