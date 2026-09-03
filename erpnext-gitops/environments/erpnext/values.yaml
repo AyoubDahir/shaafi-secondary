@@ -80,13 +80,16 @@ jobs:
     # that it's confirmed working -- don't flip true again without a real reason, a
     # forced re-run wipes and recreates the live site from scratch.
     #
-    # RE-ENABLED 2026-09-03: mariadb-galera PVCs were wiped and recreated on 10.6.20
-    # (see incident_shaafi_secondary_2026-09-01_galera_quorum memory) -- DB is
-    # genuinely empty, but the sites/shaafi directory on the separate worker PVC
-    # was untouched, so bench sees an existing site dir with no matching DB.
-    # forceCreate:true is needed to make bench new-site --force proceed anyway.
-    # Flip both back to false once confirmed successful.
-    enabled: true
+    # RE-ENABLED-then-DISABLED 2026-09-03: mariadb-galera PVCs were wiped and
+    # recreated on 10.6.20 (see incident_shaafi_secondary_2026-09-01_galera_quorum
+    # memory) -- DB was genuinely empty, but sites/shaafi on the separate worker PVC
+    # was untouched, so bench needed --force to proceed. Also hit the same
+    # __global_search MyISAM/InnoDB race as the 2026-08-23 incident (3 failed
+    # attempts before one finally succeeded on the 4th) -- confirmed NOT a version
+    # regression (direct ALTER TABLE ... ENGINE=InnoDB against 10.6.20 worked fine
+    # in isolation), just an inherently racy watcher under load, same as before.
+    # Site confirmed live via HTTP 200. Flipping back to false now.
+    enabled: false
     backoffLimit: 5
     siteName: shaafi
     dbType: mariadb
@@ -95,7 +98,7 @@ jobs:
     # Accepted only because this repo is private. Rotate via `bench --site shaafi
     # set-admin-password` after first login if this needs to change.
     adminPassword: "YmIQHWkFYnJpSG38f4Gr"
-    forceCreate: true
+    forceCreate: false
     installApps:
       - erpnext
     defaultTheme: ""
@@ -136,13 +139,10 @@ jobs:
     nodeSelector: {}
     tolerations: []
   grantSiteDbUser:
-    # DISABLED again 2026-09-03: same recurring problem as 2026-08-23 -- this job has
-    # no ArgoCD hook/sync-wave ordering relative to createSite, and its own internal
-    # retry loop (waiting for the DB to exist) was blocking the whole sync operation
-    # from ever completing/reaching createSite, since ArgoCD won't start applying a
-    # newer commit while a prior sync operation is still "Running" and waiting on
-    # this Job's health. Re-enable once createSite is confirmed to have succeeded.
-    enabled: false
+    # RE-ENABLED 2026-09-03: createSite confirmed succeeded (site live, HTTP 200).
+    # Safe to run now -- idempotent password-sync against a DB that actually exists.
+    # Flip back to false again if it ever needs to block a future createSite run.
+    enabled: true
     backoffLimit: 5
     resources: {}
   dropSite:
